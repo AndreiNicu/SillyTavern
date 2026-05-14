@@ -1,95 +1,163 @@
-<a name="readme-top"></a>
+# SillyTavern (AndreiNicu fork)
 
-![][cover]
+A personal fork of [SillyTavern](https://github.com/SillyTavern/SillyTavern)
+that tracks upstream `release` and adds a small set of features focused on
+multi-character group chats, smarter world-info activation, and runtime
+debugging.
 
-<div align="center">
+For general SillyTavern documentation, installation, and support, see the
+upstream project:
 
-English | [German](readme-de_de.md) | [中文](readme-zh_cn.md) | [繁體中文](readme-zh_tw.md) | [日本語](readme-ja_jp.md) | [Русский](readme-ru_ru.md) | [한국어](readme-ko_kr.md)
+- Upstream repo: <https://github.com/SillyTavern/SillyTavern>
+- Docs: <https://docs.sillytavern.app/>
+- Discord: <https://discord.gg/sillytavern>
+- Subreddit: <https://reddit.com/r/SillyTavernAI>
 
-[![GitHub Stars](https://img.shields.io/github/stars/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/forks)
-[![GitHub Issues](https://img.shields.io/github/issues/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/pulls)
+This README only describes what is different here.
 
-</div>
+## What this fork adds
 
----
+### LLM-routed group chat reply strategy
 
-SillyTavern provides a single unified interface for many LLM APIs (KoboldAI/CPP, Horde, NovelAI, Ooba, Tabby, OpenAI, OpenRouter, Claude, Mistral and more), a mobile-friendly layout, Visual Novel Mode, Automatic1111 & ComfyUI API image generation integration, TTS, WorldInfo (lorebooks), customizable UI, auto-translate, more prompt options than you'd ever want or need, and endless growth potential via third-party extensions.
+A new group reply strategy that uses a small/fast model (selected via a
+Connection Manager profile) to decide which character(s) speak next based
+on the recent conversation, instead of picking by natural order or
+manually. Highlights:
 
-We have a [Documentation website](https://docs.sillytavern.app/) to answer most of your questions and help you get started.
+- Returns an ordered queue of speakers; the queue is re-polled after it
+  drains so addressees and cross-character exchanges flow naturally.
+- Bounded by a per-group "max consecutive turns" cap to prevent runaway
+  loops, with the router biased toward stopping (`[]`) on follow-up
+  rounds and given a turn-context line so it can taper off near the cap.
+- Group settings expose three new fields persisted via `/api/groups`:
+  router profile id, optional system-prompt override, and max
+  consecutive turns.
+- "Director" / "NPC" tagged cards are recognised automatically and split
+  into a separate roster section. Off-roster NPC names addressed by
+  `{{user}}` are routed to a Director card and performed via a one-shot
+  in-character system note.
+- Fuzzy first-token matching resolves short names ("Anna") to full
+  main-cast names ("Anna Johansson") when unambiguous.
+- Guards against the Director performing the same NPC twice in a row or
+  performing as `{{user}}`'s own persona.
+- Falls back to natural order on missing profile or request failure so
+  chats never stall.
 
-## What is SillyTavern?
+### LLM-based world info (lorebook) key filter
 
-SillyTavern (or ST for short) is a locally installed user interface that allows you to interact with text generation LLMs, image generation engines, and TTS voice models.
+A global toggleable setting that runs a small LLM against the candidate
+lorebook entries' **titles and keys only** (never their content) to pick
+which ones are semantically relevant to the recent chat. Selected
+entries flow through the normal scan pipeline unchanged, so constants,
+decorators, sticky/cooldown, position, and budget all still apply.
 
-Beginning in February 2023 as a fork of TavernAI 1.2.8, SillyTavern now has over 300 contributors and 3 years of independent development under its belt, and continues to serve as a leading software for savvy AI hobbyists.
+- Unlocks synonym expansion (e.g. "stallion" activates a "horse" entry)
+  and disambiguates generic key matches.
+- Includes the author's note when set — its named beats / locations
+  often carry the most useful context for relevance.
+- Skipped for quiet generations (summaries, vector embeddings,
+  expression classification, slash-command LLM calls) where the result
+  would be discarded anyway.
+- Thinking-model safe: strips `<think>` / `<thinking>` / `<reasoning>` /
+  `<|think|>` / `<|begin_of_thought|>` wrappers and parses the last
+  valid JSON array in the cleaned text.
+- Fail-open: parse or transport errors surface as a toast and fall back
+  to the regex scan.
 
-## Our Vision
+### Per-lorebook "Disable inclusion group competition" toggle
 
-1. We aim to empower users with as much utility and control over their LLM prompts as possible. The steep learning curve is part of the fun!
-2. We do not provide any online or hosted services, nor programmatically track any user data.
-3. SillyTavern is a passion project brought to you by a dedicated community of LLM enthusiasts, and will always be free and open sourced.
+A checkbox at the top of each lorebook's editor (persisted as
+`disable_inclusion_group_competition` at the root of the lorebook JSON)
+that exempts every entry in that book from inclusion-group competition.
+Useful when you use the group field as an organisational tag (one group
+string per lorebook/arc/character) rather than as a competition bucket.
+Off by default; existing books are unaffected.
 
-## Do I need a powerful PC to run SillyTavern?
+### World Forge style-override runtime extension
 
-The hardware requirements are minimal: it will run on anything that can run NodeJS 20 or higher. If you intend to do LLM inference on your local machine, we recommend a 3000-series NVIDIA graphics card with at least 6GB of VRAM, but actual requirements may vary depending on the model and backend you choose to use.
+A new built-in extension (`public/scripts/extensions/world-forge`) that
+reads `data.extensions.world_forge.style_override` from the active
+character and splices a `<style_override>` block into the system prompt
+immediately after `</style_contract>` via
+`CHAT_COMPLETION_PROMPT_READY`. The pipeline owns all prose composition
+and ships a pre-resolved `directives` array (schema v2), so the
+extension just substitutes `{{char}}`/`{{user}}` macros and emits the
+block verbatim. Cards with `style_override = null` emit nothing and the
+world default governs untouched.
 
-## Questions or suggestions?
+### Prompt viewer extension
 
-### Discord server
+A wand-menu extension that lets you inspect the exact JSON body the
+browser POSTs to the chat/text-completion backends, with labels
+indicating which server-side transforms (post-processing, Claude/Gemini
+format conversion, name-prefix injection) will further mutate the
+prompt before it reaches the upstream API. Capture is done by patching
+`window.fetch` with event-based fallbacks
+(`CHAT_COMPLETION_SETTINGS_READY` / `GENERATE_AFTER_COMBINE_PROMPTS`).
 
-| [![][discord-shield-badge]][discord-link] | [Join our Discord community!](https://discord.gg/sillytavern) Get support, share favorite characters and prompts. |
-| :---------------------------------------- | :----------------------------------------------------------------------------------------------------------------- |
+A complementary **server-side dump** can be toggled from the same popup.
+When on, the post-processed request body is written as JSON to
+`$user/Logs_Prompts/` from inside
+`src/endpoints/backends/chat-completions.js` (after `postProcessPrompt`,
+before provider-specific conversion) and `text-completions.js`. The
+extension popup lists the most recent 200 dumps and re-renders them
+through the same viewer. Off by default.
 
-Or get in touch with the developers directly:
+### Structural debug log
 
-* Discord: cohee, rossascends, wolfsblvt
-* Reddit: [/u/RossAscends](https://www.reddit.com/user/RossAscends/), [/u/sillylossy](https://www.reddit.com/user/sillylossy/), [u/Wolfsblvt](https://www.reddit.com/user/Wolfsblvt/)
-* [Post a GitHub issue](https://github.com/SillyTavern/SillyTavern/issues)
+A "Debug Log to File" toggle in User Settings writes a structural entry
+per generation to `<user_data>/Logs_Debug/debug-YYYY-MM-DD.log` via a
+new `POST /api/debug-logs/append` endpoint. Logged fields:
 
-### I like your project! How do I contribute?
+- Last character to speak (and message id).
+- Activated lorebook entries (world/uid, title, position/depth, constant
+  flag).
+- Prompt section order — for chat-completion, role + identifier or a
+  content snippet; for text-completion, recognised section markers.
+- An `llm_decision_calls` section with the full prompts/responses sent
+  to the group reply router and the world-info LLM key filter (success
+  and failure paths both emit; prompt and response truncated at 8 KB).
 
-1. Send pull requests. Learn how to contribute: [CONTRIBUTING.md](../CONTRIBUTING.md)
-2. Send feature suggestions and issue reports using the provided templates.
-3. Read this entire readme file and check the documentation website first, to avoid sending duplicate issues.
+No actual prompt content is logged beyond the structural metadata, so
+the files stay small and readable. Entry boundaries follow the user
+turn: group chats use `GROUP_WRAPPER_STARTED` →
+`GROUP_WRAPPER_FINISHED` so multi-speaker turns aren't split into
+several entries.
 
-## Screenshots
+### Character video player on the zoomed avatar
 
-<img width="500" alt="image" src="https://github.com/user-attachments/assets/9b5f32f0-c3b3-4102-b3f5-0e9213c0f50f">
-<img width="500" alt="image" src="https://github.com/user-attachments/assets/913fdbaa-7d33-42f1-ae2c-89dca41c53d1">
+Lets you upload an mp4/webm video for a character alongside the static
+avatar. Clicking the avatar opens the existing zoomed view; a toggle in
+the panel control bar swaps between the still image and a looping video
+with audio and native controls. Mobile UX is reworked so the zoomed
+panel sizes to content, the control bar stays visible without hover,
+and tap targets meet the ~40 px guidance.
 
-## Installation
+### Better default summary prompt
 
-For detailed installation instructions, please visit our documentation:
+The default summary prompt has been rewritten to forbid forward-looking
+"next action" content and present-tense "current state" framing — both
+of which produced stale summaries once the second-to-last-message slot
+fell several turns behind the live chat. The new default asks for a
+past-tense, chronological summary that remains accurate when read
+later.
 
-* **[Windows Installation Guide](https://docs.sillytavern.app/installation/windows/)**
-* **[MacOS/Linux Installation Guide](https://docs.sillytavern.app/installation/linuxmacos/)**
-* **[Android (Termux) Installation Guide](https://docs.sillytavern.app/installation/android-(termux)/)**
-* **[Docker Installation Guide](https://docs.sillytavern.app/installation/docker/)**
+### Token caps and error surfacing
 
-## License and credits
+The LLM router (group reply) and LLM key filter (world info) token caps
+were bumped (router 64 → 1024, filter 256 → 2048) to give thinking
+models room to reason before producing their JSON answer. Failures from
+either call now surface as a toast in addition to the console error,
+and both fall back to the heuristic / regex path so generation
+continues.
 
-**This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.**
+## Branch layout
 
-* [TavernAI](https://github.com/TavernAI/TavernAI) 1.2.8 by Humi: MIT License
-* Portions of CncAnon's TavernAITurbo mod used with permission
-* Visual Novel Mode inspired by the work of PepperTaco (<https://github.com/peppertaco/Tavern/>)
-* Noto Sans font by Google (OFL license)
-* Lexer/Parser by Chevrotain (Apache-2.0 license) <https://github.com/chevrotain/chevrotain>
-* Icon theme by Font Awesome <https://fontawesome.com> (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License)
-* Default content by @OtisAlejandro (Seraphina character and lorebook) and @kallmeflocc (10K Discord Users Celebratory Background)
-* Docker guide by [@mrguymiah](https://github.com/mrguymiah) and [@Bronya-Rand](https://github.com/Bronya-Rand)
-* kokoro-js library by [@hexgrad](https://github.com/hexgrad) (Apache-2.0 License)
+- `claude/merge-upstream-release-*` — periodic merges from
+  `upstream/release`.
+- `claude/<feature-slug>-*` — short-lived branches per feature.
+- Merged into `main` (this repo's default) via PR once tested.
 
-## Top Contributors
+## License
 
-[![Contributors](https://contrib.rocks/image?repo=SillyTavern/SillyTavern)](https://github.com/SillyTavern/SillyTavern/graphs/contributors)
-
-<!-- LINK GROUP -->
-[cover]: https://github.com/user-attachments/assets/01a6ae9a-16aa-45f2-8bff-32b5dc587e44
-[discord-link]: https://discord.gg/sillytavern
-[discord-shield-badge]: https://img.shields.io/discord/1100685673633153084?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=for-the-badge
+AGPL-3.0, same as upstream SillyTavern.

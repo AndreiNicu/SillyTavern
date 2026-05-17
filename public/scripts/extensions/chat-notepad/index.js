@@ -14,6 +14,50 @@ import { power_user } from '../../power-user.js';
 
 const MODULE = 'chat-notepad';
 
+// Ring buffer of recent log entries. Exposed via /notepad-log slash command
+// and on window.__chatNotepad so diagnostics are reachable without DevTools.
+const LOG_BUFFER_MAX = 200;
+const logBuffer = [];
+
+function pushLog(level, args) {
+    const entry = {
+        t: new Date().toISOString(),
+        level,
+        msg: args.map(a => {
+            if (a instanceof Error) return `${a.name}: ${a.message}\n${a.stack ?? ''}`;
+            if (typeof a === 'string') return a;
+            try { return JSON.stringify(a); } catch { return String(a); }
+        }).join(' '),
+    };
+    logBuffer.push(entry);
+    if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
+}
+
+function log(...args) {
+    pushLog('info', args);
+    console.log(`[${MODULE}]`, ...args);
+}
+function warn(...args) {
+    pushLog('warn', args);
+    console.warn(`[${MODULE}]`, ...args);
+}
+function err(...args) {
+    pushLog('error', args);
+    console.error(`[${MODULE}]`, ...args);
+    try {
+        if (typeof toastr !== 'undefined') {
+            const msg = args.map(a => (a instanceof Error) ? `${a.name}: ${a.message}` : String(a)).join(' ');
+            toastr.error(msg.slice(0, 500), 'Chat Notepad');
+        }
+    } catch { /* ignore toast failures */ }
+}
+
+function dumpLog() {
+    const text = logBuffer.map(e => `[${e.t}] [${e.level}] ${e.msg}`).join('\n');
+    console.log(`[${MODULE}] --- log dump (${logBuffer.length} entries) ---\n${text}`);
+    return text;
+}
+
 let isOpen = false;
 let isApplyingExternalUpdate = false;
 let $window = null;
@@ -255,20 +299,107 @@ function attachChatListeners() {
 }
 
 export async function init() {
-    const windowHtml = await renderExtensionTemplateAsync(MODULE, 'window');
-    const buttonHtml = await renderExtensionTemplateAsync(MODULE, 'button');
+    log('init: starting');
 
-    $(document.body).append(windowHtml);
-    $('#extensionsMenu').append(buttonHtml);
+    // Expose diagnostics for the user even if DevTools isn't open.
+    try {
+        window.__chatNotepad = {
+            module: MODULE,
+            getLog: () => logBuffer.slice(),
+            dumpLog,
+            isOpen: () => isOpen,
+            segments: () => segments,
+            open: openWindow,
+            close: closeWindow,
+            rebuild,
+        };
+    } catch (e) {
+        warn('failed to install window.__chatNotepad', e);
+    }
 
-    $window = $('#chat_notepad_window');
-    $body = $('#chat_notepad_body');
-    $empty = $('#chat_notepad_empty');
-    $status = $('#chat_notepad_status');
+    let windowHtml, buttonHtml;
+    try {
+        log('init: loading window.html template');
+        windowHtml = await renderExtensionTemplateAsync(MODULE, 'window');
+        log('init: loading button.html template');
+        buttonHtml = await renderExtensionTemplateAsync(MODULE, 'button');
+    } catch (e) {
+        err('init: template render failed', e);
+        return;
+    }
 
-    $('#chat_notepad_menu_button').on('click', toggleWindow);
-    $('#chat_notepad_close').on('click', closeWindow);
-    $('#chat_notepad_refresh').on('click', () => { if (isOpen) rebuild(); });
+    if (!windowHtml || !buttonHtml) {
+        err('init: template render returned empty result (sanitize/locale step likely failed — see DevTools console)');
+        return;
+    }
 
-    attachChatListeners();
+    try {
+        $(document.body).append(windowHtml);
+        const $menu = $('#extensionsMenu');
+        if ($menu.length === 0) {
+            warn('init: #extensionsMenu not found in DOM, appending button to body as fallback');
+            $(document.body).append(buttonHtml);
+        } else {
+            $menu.append(buttonHtml);
+        }
+
+        $window = $('#chat_notepad_window');
+        $body = $('#chat_notepad_body');
+        $empty = $('#chat_notepad_empty');
+        $status = $('#chat_notepad_status');
+
+        if ($window.length === 0 || $body.length === 0) {
+            err('init: window element not found after append (DOMPurify may have stripped it)');
+            return;
+        }
+
+        $('#chat_notepad_menu_button').on('click', toggleWindow);
+        $('#chat_notepad_close').on('click', closeWindow);
+        $('#chat_notepad_refresh').on('click', () => { if (isOpen) rebuild(); });
+    } catch (e) {
+        err('init: DOM wiring failed', e);
+        return;
+    }
+
+    try {
+        attachChatListeners();
+    } catch (e) {
+        err('init: event listener attach failed', e);
+        return;
+    }
+
+    try {
+        registerSlashCommands();
+    } catch (e) {
+        warn('init: slash command registration failed (non-fatal)', e);
+    }
+
+    log('init: complete');
+}
+
+function registerSlashCommands() {
+    const ctx = getContext();
+    if (!ctx?.SlashCommandParser || !ctx?.SlashCommand) return;
+    const { SlashCommandParser, SlashCommand } = ctx;
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'notepad-log',
+        callback: () => {
+            const text = dumpLog();
+            try {
+                if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text);
+            } catch { /* ignore */ }
+            if (typeof toastr !== 'undefined') {
+                toastr.info(`${logBuffer.length} entries dumped to console (also copied to clipboard)`, 'Chat Notepad');
+            }
+            return text;
+        },
+        helpString: 'Dumps the Chat Notepad log buffer to the console (and copies to clipboard).',
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'notepad',
+        callback: () => { toggleWindow(); return ''; },
+        helpString: 'Toggles the Chat Notepad pane.',
+    }));
 }

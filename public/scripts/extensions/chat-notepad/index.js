@@ -5,7 +5,6 @@ import {
     updateMessageBlock,
     saveChatConditional,
 } from '../../../script.js';
-import { renderExtensionTemplateAsync } from '../../extensions.js';
 import { parseReasoningFromString } from '../../reasoning.js';
 import { getContext } from '../../st-context.js';
 import { debounce } from '../../utils.js';
@@ -13,6 +12,128 @@ import { debounce_timeout } from '../../constants.js';
 import { power_user } from '../../power-user.js';
 
 const MODULE = 'chat-notepad';
+
+// Templates are inlined to avoid an extra HTTP fetch for window.html / button.html
+// (some deployments don't serve arbitrary files from extension directories).
+const WINDOW_HTML = `
+<div id="chat_notepad_window" class="drawer-content chat_notepad_window" style="display: none;">
+    <div id="chat_notepad_header" class="chat_notepad_header flex-container alignItemsCenter spaceBetween">
+        <h3 class="margin0">
+            <i class="fa-solid fa-book-open"></i>
+            <span data-i18n="Chat Notepad">Chat Notepad</span>
+        </h3>
+        <div class="flex-container flexGap5 alignItemsCenter">
+            <small id="chat_notepad_status" class="chat_notepad_status" data-i18n="Saved">Saved</small>
+            <div id="chat_notepad_refresh" class="menu_button menu_button_icon" title="Rebuild from chat">
+                <i class="fa-solid fa-rotate"></i>
+            </div>
+            <div id="chat_notepad_close" class="menu_button menu_button_icon" title="Close">
+                <i class="fa-solid fa-xmark"></i>
+            </div>
+        </div>
+    </div>
+    <div id="chat_notepad_empty" class="chat_notepad_empty" style="display: none;">
+        <p data-i18n="No chat is open, or the chat has no messages.">No chat is open, or the chat has no messages.</p>
+    </div>
+    <div id="chat_notepad_body" class="chat_notepad_body"></div>
+</div>`;
+
+const BUTTON_HTML = `
+<div id="chat_notepad_menu_button" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
+    <div class="fa-solid fa-book-open extensionsMenuExtensionButton" title="Toggle Chat Notepad"></div>
+    <span data-i18n="Chat Notepad">Chat Notepad</span>
+</div>`;
+
+const STYLE_CSS = `
+#chat_notepad_window {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 420px;
+    height: 100vh;
+    max-width: 90vw;
+    z-index: 3000;
+    background-color: var(--SmartThemeBlurTintColor, #1f1f1f);
+    color: var(--SmartThemeBodyColor, #e0e0e0);
+    border-left: 1px solid var(--SmartThemeBorderColor, #444);
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.chat_notepad_header {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #444);
+    flex: 0 0 auto;
+    cursor: default;
+    user-select: none;
+}
+.chat_notepad_status {
+    opacity: 0.65;
+    font-style: italic;
+    min-width: 60px;
+    text-align: right;
+}
+.chat_notepad_status.dirty {
+    color: var(--warning, #d39a00);
+    opacity: 1;
+}
+.chat_notepad_empty {
+    padding: 24px;
+    text-align: center;
+    opacity: 0.7;
+}
+.chat_notepad_body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px 18px;
+    font-family: var(--mainFontFamily, Georgia, 'Times New Roman', serif);
+    font-size: 15px;
+    line-height: 1.55;
+}
+.chat_notepad_segment {
+    width: 100%;
+    box-sizing: border-box;
+    background: transparent;
+    color: inherit;
+    border: none;
+    outline: none;
+    resize: none;
+    padding: 0;
+    margin: 0 0 1em 0;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: block;
+}
+.chat_notepad_segment:focus {
+    background: rgba(255, 255, 255, 0.04);
+    box-shadow: inset 0 0 0 1px var(--SmartThemeBorderColor, #555);
+    border-radius: 3px;
+}
+.chat_notepad_body:empty::before {
+    content: 'No messages yet.';
+    opacity: 0.5;
+}
+@media (max-width: 768px) {
+    #chat_notepad_window {
+        width: 100vw;
+        max-width: 100vw;
+    }
+}`;
+
+function injectStyles() {
+    if (document.getElementById('chat_notepad_inline_styles')) return;
+    const style = document.createElement('style');
+    style.id = 'chat_notepad_inline_styles';
+    style.textContent = STYLE_CSS;
+    document.head.appendChild(style);
+}
 
 // Ring buffer of recent log entries. Exposed via /notepad-log slash command
 // and on window.__chatNotepad so diagnostics are reachable without DevTools.
@@ -317,30 +438,21 @@ export async function init() {
         warn('failed to install window.__chatNotepad', e);
     }
 
-    let windowHtml, buttonHtml;
     try {
-        log('init: loading window.html template');
-        windowHtml = await renderExtensionTemplateAsync(MODULE, 'window');
-        log('init: loading button.html template');
-        buttonHtml = await renderExtensionTemplateAsync(MODULE, 'button');
+        injectStyles();
     } catch (e) {
-        err('init: template render failed', e);
-        return;
-    }
-
-    if (!windowHtml || !buttonHtml) {
-        err('init: template render returned empty result (sanitize/locale step likely failed — see DevTools console)');
-        return;
+        warn('init: style injection failed (non-fatal)', e);
     }
 
     try {
-        $(document.body).append(windowHtml);
+        log('init: appending window + button (inline templates)');
+        $(document.body).append(WINDOW_HTML);
         const $menu = $('#extensionsMenu');
         if ($menu.length === 0) {
             warn('init: #extensionsMenu not found in DOM, appending button to body as fallback');
-            $(document.body).append(buttonHtml);
+            $(document.body).append(BUTTON_HTML);
         } else {
-            $menu.append(buttonHtml);
+            $menu.append(BUTTON_HTML);
         }
 
         $window = $('#chat_notepad_window');

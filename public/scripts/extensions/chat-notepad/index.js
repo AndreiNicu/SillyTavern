@@ -16,7 +16,7 @@ const MODULE = 'chat-notepad';
 // Templates are inlined to avoid an extra HTTP fetch for window.html / button.html
 // (some deployments don't serve arbitrary files from extension directories).
 const WINDOW_HTML = `
-<div id="chat_notepad_window" class="drawer-content chat_notepad_window" style="display: none;">
+<div id="chat_notepad_window" class="chat_notepad_window chat_notepad_hidden">
     <div id="chat_notepad_header" class="chat_notepad_header flex-container alignItemsCenter spaceBetween">
         <h3 class="margin0">
             <i class="fa-solid fa-book-open"></i>
@@ -46,12 +46,16 @@ const BUTTON_HTML = `
 
 const STYLE_CSS = `
 #chat_notepad_window {
-    position: fixed;
-    top: 0;
-    right: 0;
-    width: 420px;
-    height: 100vh;
-    max-width: 90vw;
+    position: fixed !important;
+    top: var(--topBarBlockSize, 40px) !important;
+    right: 0 !important;
+    left: auto !important;
+    bottom: 0 !important;
+    width: 420px !important;
+    max-width: 90vw !important;
+    height: auto !important;
+    min-width: 0 !important;
+    margin: 0 !important;
     z-index: 3000;
     background-color: var(--SmartThemeBlurTintColor, #1f1f1f);
     color: var(--SmartThemeBodyColor, #e0e0e0);
@@ -61,6 +65,12 @@ const STYLE_CSS = `
     flex-direction: column;
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
+    padding: 0 !important;
+    border-radius: 0 !important;
+    overflow: hidden;
+}
+#chat_notepad_window.chat_notepad_hidden {
+    display: none !important;
 }
 .chat_notepad_header {
     padding: 8px 12px;
@@ -371,14 +381,14 @@ async function saveSegment(textarea) {
 
 function openWindow() {
     if (!$window) return;
-    $window.show();
+    $window.removeClass('chat_notepad_hidden');
     isOpen = true;
     rebuild();
 }
 
 function closeWindow() {
     if (!$window) return;
-    $window.hide();
+    $window.addClass('chat_notepad_hidden');
     isOpen = false;
 }
 

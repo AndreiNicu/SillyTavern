@@ -120,6 +120,11 @@ const STYLE_CSS = `
     white-space: pre-wrap;
     word-break: break-word;
     display: block;
+    /* SillyTavern's global "textarea" rule caps height at 90vh; without this
+       override long messages get clamped and their bottom paragraphs hidden
+       behind the next segment. Let autoResize() set the full content height. */
+    max-height: none !important;
+    min-height: 0 !important;
 }
 .chat_notepad_segment:focus {
     background: rgba(255, 255, 255, 0.04);

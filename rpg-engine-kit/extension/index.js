@@ -11,6 +11,8 @@
  * The server owns the numbers; this file only wires events to it.
  */
 
+/* global SillyTavern, jQuery, $, fetch, toastr, console, globalThis, structuredClone */
+
 const API = '/api/plugins/rpg-engine';
 const PROMPT_KEY = 'rpg_engine_sheet';
 const INJECT_IN_CHAT = 1; // extension_prompt_types.IN_CHAT

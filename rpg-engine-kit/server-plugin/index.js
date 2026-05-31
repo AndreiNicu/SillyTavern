@@ -16,6 +16,7 @@
  *
  * Routes mount under /api/plugins/rpg-engine/*.
  */
+/* global require, module, __dirname, console, structuredClone */
 'use strict';
 
 const fs = require('fs');

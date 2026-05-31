@@ -1,0 +1,21 @@
+{
+    "_comment": "Data-driven combat rules. The parser LLM only classifies a damage_tier; the server maps the tier to dice and rolls it here. Edit freely — this is the 'hard tier' the model cannot override.",
+    "tiers": {
+        "none": "0",
+        "graze": "1d4",
+        "light": "1d6",
+        "medium": "2d6",
+        "heavy": "3d6",
+        "critical": "4d8"
+    },
+    "npc_template": {
+        "name": "",
+        "hp": 12,
+        "maxhp": 12,
+        "ac": 12,
+        "armor_dr": 0,
+        "conditions": "none"
+    },
+    "unconscious_at": 0,
+    "unconscious_condition": "unconscious"
+}

@@ -1,0 +1,251 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://github.com/AndreiNicu/SillyTavern/rpg-engine-kit/schema/world-forge-rpg.schema.json",
+    "title": "World-Forge RPG Profile",
+    "description": "Interface contract between the World-Forge generation pipeline (producer) and the SillyTavern RPG engine (consumer). World-Forge writes RPG stat data; the RPG engine reads it to seed authoritative game state (active.json). A document is one of three kinds: a character profile (embedded in a card under data.extensions.world_forge_rpg), a standalone user profile, or a bestiary library of monsters. Numbers here are STARTING values only — once a game begins the engine owns mutation; this schema never carries live/per-turn state.",
+
+    "type": "object",
+    "required": ["kind", "schema_version"],
+    "properties": {
+        "kind": {
+            "description": "Document discriminator. 'character_rpg_profile' is embedded in a card's data.extensions.world_forge_rpg; the others are standalone files.",
+            "enum": ["character_rpg_profile", "user_rpg_profile", "bestiary"]
+        },
+        "schema_version": {
+            "description": "Semver of THIS schema the document was authored against. The engine validates major-version compatibility on import and refuses mismatches rather than guessing.",
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+    },
+
+    "allOf": [
+        {
+            "if": { "properties": { "kind": { "const": "character_rpg_profile" } } },
+            "then": { "$ref": "#/$defs/characterProfile" }
+        },
+        {
+            "if": { "properties": { "kind": { "const": "user_rpg_profile" } } },
+            "then": { "$ref": "#/$defs/userProfile" }
+        },
+        {
+            "if": { "properties": { "kind": { "const": "bestiary" } } },
+            "then": { "$ref": "#/$defs/bestiary" }
+        }
+    ],
+
+    "$defs": {
+
+        "tierName": {
+            "description": "Severity bucket for an attack outcome. The small parser LLM emits one of these; the engine maps it to dice. This is the ONLY damage vocabulary that crosses the LLM boundary — raw numbers never do.",
+            "enum": ["none", "graze", "light", "medium", "heavy", "critical"]
+        },
+
+        "diceFormula": {
+            "description": "A droll-style dice expression (e.g. '2d6', '1d8+2') or a bare integer (e.g. '5'). Resolved server-side at apply time.",
+            "type": "string",
+            "pattern": "^(\\d+d\\d+([+-]\\d+)?|\\d+)$"
+        },
+
+        "damageTierTable": {
+            "description": "Per-entity mapping of tier -> dice. This is how a tier-5 monster's 'heavy' hits harder than a tier-1's: each entity calibrates its own table. When absent, the engine falls back to its global rules.json table.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "none": { "$ref": "#/$defs/diceFormula" },
+                "graze": { "$ref": "#/$defs/diceFormula" },
+                "light": { "$ref": "#/$defs/diceFormula" },
+                "medium": { "$ref": "#/$defs/diceFormula" },
+                "heavy": { "$ref": "#/$defs/diceFormula" },
+                "critical": { "$ref": "#/$defs/diceFormula" }
+            }
+        },
+
+        "abilityScores": {
+            "description": "Optional D&D-style ability modifiers (already as modifiers, not raw 3-18 scores), matching the dnd-starter-kit convention.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "str": { "type": "integer" },
+                "dex": { "type": "integer" },
+                "con": { "type": "integer" },
+                "int": { "type": "integer" },
+                "wis": { "type": "integer" },
+                "cha": { "type": "integer" }
+            }
+        },
+
+        "item": {
+            "description": "A piece of equipment. Carried for reference and loot; the engine does NOT re-derive combat stats from items at runtime (see statBlock.combat — World-Forge emits resolved values). 'combat_mods' documents this item's contribution so a future /equip endpoint can recompute on loot/swap.",
+            "type": "object",
+            "required": ["id", "name", "slot"],
+            "additionalProperties": false,
+            "properties": {
+                "id": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+                "name": { "type": "string" },
+                "slot": {
+                    "description": "Where the item is worn/wielded. 'none' for consumables/misc.",
+                    "enum": ["head", "body", "hands", "legs", "feet", "main_hand", "off_hand", "accessory", "none"]
+                },
+                "type": { "enum": ["weapon", "armor", "shield", "consumable", "misc"] },
+                "description": { "type": "string" },
+                "combat_mods": {
+                    "description": "This item's contribution to the resolved combat profile. Additive bonuses; attack items may set a default attack tier.",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "armor_dr_bonus": { "type": "integer", "minimum": 0 },
+                        "ac_bonus": { "type": "integer" },
+                        "maxhp_bonus": { "type": "integer" },
+                        "attack_tier": { "$ref": "#/$defs/tierName" },
+                        "attack_type": { "type": "string" }
+                    }
+                }
+            }
+        },
+
+        "combatProfile": {
+            "description": "The RESOLVED combat numbers the engine seeds directly into active.json. World-Forge computes these from base stats + equipment so the engine stays a pure calculator. armor_dr is flat damage reduction subtracted from each physical hit (the 'thick armor' model); ac is the avoidance value (harder to hit).",
+            "type": "object",
+            "required": ["hp", "maxhp"],
+            "additionalProperties": false,
+            "properties": {
+                "hp": { "type": "integer", "minimum": 0 },
+                "maxhp": { "type": "integer", "minimum": 1 },
+                "ac": { "type": "integer", "minimum": 0 },
+                "armor_dr": {
+                    "description": "Flat damage reduction per physical hit.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0
+                },
+                "conditions": {
+                    "description": "Comma-free status label or 'none'. Starting condition only.",
+                    "type": "string",
+                    "default": "none"
+                },
+                "damage_tiers": { "$ref": "#/$defs/damageTierTable" },
+                "default_attack_tier": {
+                    "description": "Tier this entity deals by default when the narration is vague about severity.",
+                    "$ref": "#/$defs/tierName"
+                },
+                "tier_shift": {
+                    "description": "Optional resistance/weakness model that stays server-deterministic: per attack_type, shift the incoming tier by N steps (negative = resistant, positive = vulnerable). Example: {\"slashing\": -1} means heavy plate downgrades incoming slashes by one tier. Engine clamps within the tier list.",
+                    "type": "object",
+                    "additionalProperties": { "type": "integer" }
+                }
+            }
+        },
+
+        "statBlock": {
+            "description": "The full RPG stat object for a single entity (character, user, or monster). 'combat' is mandatory (what the engine seeds); the rest is descriptive/progression context World-Forge may carry for richer play.",
+            "type": "object",
+            "required": ["id", "combat"],
+            "additionalProperties": false,
+            "properties": {
+                "id": {
+                    "description": "Stable snake_case identifier used as the entity key in active.json and as the attacker/target id the parser LLM emits.",
+                    "type": "string",
+                    "pattern": "^[a-z0-9_]+$"
+                },
+                "display_name": { "type": "string" },
+                "level": { "type": "integer", "minimum": 1 },
+                "abilities": { "$ref": "#/$defs/abilityScores" },
+                "combat": { "$ref": "#/$defs/combatProfile" },
+                "equipment": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/item" }
+                },
+                "progression": {
+                    "description": "Optional hook for World-Forge's existing arc/progression model (XP, milestones). The engine ignores unknown progression fields.",
+                    "type": "object",
+                    "properties": {
+                        "xp": { "type": "integer", "minimum": 0 },
+                        "next_level_xp": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        },
+
+        "characterProfile": {
+            "description": "Embedded in a V3 card at data.extensions.world_forge_rpg. The character's id should be stable across the world; display_name typically mirrors the card's data.name.",
+            "type": "object",
+            "required": ["kind", "schema_version", "stats"],
+            "properties": {
+                "kind": { "const": "character_rpg_profile" },
+                "schema_version": { "type": "string" },
+                "world_id": {
+                    "description": "Optional link back to the World-Forge world this character belongs to, so the engine can pair the right bestiary/user files.",
+                    "type": "string"
+                },
+                "stats": { "$ref": "#/$defs/statBlock" }
+            },
+            "additionalProperties": false
+        },
+
+        "userProfile": {
+            "description": "Standalone file for the player persona (personas lack a rich card extensions field, so the user's RPG stats live here). The engine seeds this as the 'player' entity.",
+            "type": "object",
+            "required": ["kind", "schema_version", "stats"],
+            "properties": {
+                "kind": { "const": "user_rpg_profile" },
+                "schema_version": { "type": "string" },
+                "world_id": { "type": "string" },
+                "stats": {
+                    "description": "The player's stat block. By convention stats.id is 'player' so it matches the engine's default entity key.",
+                    "$ref": "#/$defs/statBlock"
+                }
+            },
+            "additionalProperties": false
+        },
+
+        "bestiary": {
+            "description": "Read-only monster library for a world. The engine never mutates this; on spawn it COPIES a monster's stat block into active.json as a combat instance, mutates the copy per turn, and discards it when the monster is vanquished — the library stays intact.",
+            "type": "object",
+            "required": ["kind", "schema_version", "monsters"],
+            "properties": {
+                "kind": { "const": "bestiary" },
+                "schema_version": { "type": "string" },
+                "world_id": { "type": "string" },
+                "global_damage_tiers": {
+                    "description": "Optional bestiary-wide fallback tier table for monsters that don't define their own.",
+                    "$ref": "#/$defs/damageTierTable"
+                },
+                "monsters": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/$defs/monster" }
+                }
+            },
+            "additionalProperties": false
+        },
+
+        "monster": {
+            "description": "A monster template. 'tier' (1-5) drives encounter scaling; 'boss' marks named/elite foes. Multiple instances of the same template spawn with distinct instance ids appended by the engine (e.g. goblin_raider#2).",
+            "type": "object",
+            "required": ["tier", "stats"],
+            "additionalProperties": false,
+            "properties": {
+                "tier": {
+                    "description": "Difficulty tier 1 (trivial) to 5 (deadly).",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5
+                },
+                "boss": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "stats": { "$ref": "#/$defs/statBlock" },
+                "loot_table": {
+                    "description": "Optional items that may drop on defeat, for a future loot/equip flow.",
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/item" }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,80 @@
+{
+    "kind": "bestiary",
+    "schema_version": "1.0.0",
+    "world_id": "lucifer",
+    "global_damage_tiers": {
+        "graze": "1d4",
+        "light": "1d6",
+        "medium": "2d6",
+        "heavy": "3d6",
+        "critical": "4d8"
+    },
+    "monsters": [
+        {
+            "tier": 1,
+            "boss": false,
+            "stats": {
+                "id": "goblin_raider",
+                "display_name": "Goblin Raider",
+                "level": 1,
+                "combat": {
+                    "hp": 12,
+                    "maxhp": 12,
+                    "ac": 12,
+                    "armor_dr": 0,
+                    "conditions": "none",
+                    "default_attack_tier": "light"
+                }
+            },
+            "loot_table": [
+                { "id": "rusty_dagger", "name": "Rusty Dagger", "slot": "main_hand", "type": "weapon" }
+            ]
+        },
+        {
+            "tier": 3,
+            "boss": false,
+            "stats": {
+                "id": "stone_brute",
+                "display_name": "Stone Brute",
+                "level": 5,
+                "combat": {
+                    "hp": 48,
+                    "maxhp": 48,
+                    "ac": 14,
+                    "armor_dr": 3,
+                    "conditions": "none",
+                    "default_attack_tier": "medium",
+                    "damage_tiers": { "medium": "2d10", "heavy": "3d10" },
+                    "tier_shift": { "bludgeoning": -1 }
+                }
+            }
+        },
+        {
+            "tier": 5,
+            "boss": true,
+            "stats": {
+                "id": "bone_warden",
+                "display_name": "The Bone Warden",
+                "level": 12,
+                "combat": {
+                    "hp": 120,
+                    "maxhp": 120,
+                    "ac": 18,
+                    "armor_dr": 5,
+                    "conditions": "none",
+                    "default_attack_tier": "heavy",
+                    "damage_tiers": {
+                        "light": "2d8",
+                        "medium": "4d8",
+                        "heavy": "6d10",
+                        "critical": "8d12+10"
+                    },
+                    "tier_shift": { "slashing": -1, "fire": 1 }
+                }
+            },
+            "loot_table": [
+                { "id": "warden_glaive", "name": "Glaive of the Warden", "slot": "main_hand", "type": "weapon", "combat_mods": { "attack_tier": "heavy", "attack_type": "slashing" } }
+            ]
+        }
+    ]
+}

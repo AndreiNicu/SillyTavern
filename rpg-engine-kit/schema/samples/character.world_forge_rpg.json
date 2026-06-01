@@ -1,0 +1,45 @@
+{
+    "kind": "character_rpg_profile",
+    "schema_version": "1.0.0",
+    "world_id": "lucifer",
+    "stats": {
+        "id": "ser_kael",
+        "display_name": "Ser Kael",
+        "level": 3,
+        "abilities": { "str": 3, "dex": 1, "con": 3, "int": 0, "wis": 1, "cha": 1 },
+        "combat": {
+            "hp": 34,
+            "maxhp": 34,
+            "ac": 17,
+            "armor_dr": 4,
+            "conditions": "none",
+            "default_attack_tier": "medium",
+            "damage_tiers": {
+                "light": "1d8",
+                "medium": "2d8",
+                "heavy": "3d8+2",
+                "critical": "5d8"
+            },
+            "tier_shift": { "slashing": -1 }
+        },
+        "equipment": [
+            {
+                "id": "heavy_plate",
+                "name": "Heavy Plate Armor",
+                "slot": "body",
+                "type": "armor",
+                "description": "Full steel plate; turns aside glancing blades.",
+                "combat_mods": { "armor_dr_bonus": 4, "ac_bonus": 5 }
+            },
+            {
+                "id": "longsword",
+                "name": "Longsword",
+                "slot": "main_hand",
+                "type": "weapon",
+                "combat_mods": { "attack_tier": "medium", "attack_type": "slashing" }
+            }
+        ],
+        "progression": { "xp": 900, "next_level_xp": 2700 },
+        "tags": ["knight", "frontline"]
+    }
+}

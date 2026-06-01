@@ -51,6 +51,50 @@ The bestiary is a library. On spawn the engine **copies** a monster's stat block
 `goblin_raider#2`), mutates the copy per turn, and discards it on defeat — the library stays
 intact. This is the "compose monster → fight → vanquish → file removed, master intact" flow.
 
+## Reliability — keeping the LLM from mislabelling
+
+The one fallible step is the parser LLM choosing a `damage_tier`. The math after it is
+deterministic. We attack the risk on four fronts; the engine implements the deterministic ones,
+and World-Forge should follow the balance guideline below.
+
+**Constrain what it can say** — `damage_tier` is a closed enum under JSON-schema strict mode, so
+only the six words are possible. For a stable parser, point the engine at a dedicated
+low-temperature connection profile (classification wants determinism, not creativity).
+
+**Make the decision easier** — the parser prompt carries a *rubric* (concrete narrative anchors
+per tier: graze/light/medium/heavy/critical), is told "when unsure, choose the lower tier", is
+handed the triggering combat keyword, and must return an `evidence` quote. Requiring evidence
+both improves the choice and lets the engine corroborate it.
+
+**Validate before trusting** (engine, deterministic):
+- `target`/`attacker` are checked against `active.json`; an unknown target is rejected unless
+  `rules.json.allow_auto_create` is on (demo only). This kills hallucinated combatants.
+- the `evidence` quote must actually appear in the narration, or the apply is skipped.
+
+**Contain the blast radius** (engine + balance):
+- a **damage governor** (`rules.json.governor`) caps any single non-critical hit at a fraction
+  of the target's `maxhp` (default 35%), so a misclassified `heavy` can't one-shot. `critical`
+  is exempt by design.
+- **Balance guideline for World-Forge:** keep *adjacent* tiers for the same entity close, so a
+  one-step mislabel is survivable. Big jumps belong *between* tier-1 and tier-5 creatures, not
+  between adjacent words for one creature. A reasonable shape is roughly:
+  `light ≈ ½·medium`, `heavy ≈ 1.5·medium`, `critical ≈ 2·medium` (avg damage). Avoid e.g.
+  `medium:2d6` next to `heavy:6d10` on the same creature — that turns a single misclassification
+  into a kill.
+
+## Tier-table resolution order
+
+When the engine needs the dice for a (`tier`) on a given attacker, it uses the most specific
+table available:
+
+1. the attacker's own `combat.damage_tiers`
+2. the bestiary's `tier_tables[<attacker tier>]` (per-tier world balance)
+3. the bestiary's `global_damage_tiers`
+4. the engine's `rules.json.tiers` (demo fallback)
+
+This lets World-Forge state "all tier-5 monsters hit like *this*" once via `tier_tables`, and
+only override on a special boss via that monster's own `damage_tiers`.
+
 ## Samples & validation
 
 `samples/` holds one valid instance of each kind (the knight `ser_kael` shows `armor_dr 4` +

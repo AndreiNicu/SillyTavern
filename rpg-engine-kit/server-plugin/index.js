@@ -106,6 +106,14 @@ function rollFormula(formula) {
     return total;
 }
 
+// Ordered severity ladder. tier_shift moves an incoming attack along this list
+// (negative = resisted/downgraded, positive = vulnerable/upgraded).
+const TIER_ORDER = ['none', 'graze', 'light', 'medium', 'heavy', 'critical'];
+
+function entityExists(state, id) {
+    return !!(state && state.entities && state.entities[id]);
+}
+
 function ensureEntity(state, id) {
     if (!state.entities) state.entities = {};
     if (!state.entities[id]) {
@@ -115,31 +123,111 @@ function ensureEntity(state, id) {
 }
 
 /**
+ * Resolve the dice formula for a (attacker, tier) pair using the most-specific
+ * table available. Resolution order:
+ *   attacker.damage_tiers -> state.tier_tables[attacker.tier]
+ *   -> state.global_damage_tiers -> RULES.tiers (demo fallback)
+ * @returns {string|undefined}
+ */
+function resolveFormula(state, attacker, tier) {
+    const tables = [
+        attacker && attacker.damage_tiers,
+        attacker && state.tier_tables && state.tier_tables[String(attacker.tier)],
+        state && state.global_damage_tiers,
+        RULES.tiers,
+    ];
+    for (const t of tables) {
+        if (t && t[tier] !== undefined) return t[tier];
+    }
+    return undefined;
+}
+
+/**
+ * Apply the target's tier_shift for this attack type, clamped to the ladder.
+ * @returns {string} the (possibly shifted) tier name
+ */
+function applyTierShift(target, attackType, tier) {
+    const shift = target && target.tier_shift && attackType
+        ? Number(target.tier_shift[attackType]) || 0
+        : 0;
+    if (!shift) return tier;
+    const idx = TIER_ORDER.indexOf(tier);
+    if (idx < 0) return tier;
+    const shifted = Math.min(TIER_ORDER.length - 1, Math.max(0, idx + shift));
+    return TIER_ORDER[shifted];
+}
+
+/**
  * Apply one parsed combat outcome to the state in place.
- * The parser LLM only classifies; legality and numbers are decided here.
- * @returns {{ ok: boolean, delta: string }}
+ *
+ * The parser LLM only classifies (target/attacker/attack_type/damage_tier);
+ * legality and all numbers are decided here. Several deterministic safeguards
+ * limit the blast radius of an LLM mislabel:
+ *   - target/attacker must be known entities (rejects hallucinated combatants);
+ *   - tier_shift adjusts severity by damage type before rolling;
+ *   - a damage governor caps a single non-crit hit as a fraction of maxhp.
+ *
+ * @returns {{ ok: boolean, delta: string, rejected?: string }}
  */
 function applyAction(state, parsed) {
     if (!parsed || parsed.action_valid === false) {
         return { ok: false, delta: 'No valid combat action detected.' };
     }
-    const targetId = sanitizeId(parsed.target);
     if (!parsed.target) {
         return { ok: false, delta: 'No target specified.' };
     }
-    const tier = String(parsed.damage_tier || 'none');
-    if (tier === 'none') {
+    const targetId = sanitizeId(parsed.target);
+    const attackerId = parsed.attacker ? sanitizeId(parsed.attacker) : null;
+
+    // Safeguard: reject hallucinated combatants. The target must already exist
+    // in the game (auto-create only if explicitly allowed, for the demo flow).
+    if (!entityExists(state, targetId)) {
+        if (!RULES.allow_auto_create) {
+            return { ok: false, rejected: 'unknown_target', delta: `Rejected: unknown target '${targetId}'.` };
+        }
+    }
+    // A named attacker that doesn't exist is a strong hallucination signal; warn
+    // but don't auto-create attackers (they don't take damage here).
+    let attackerWarn = '';
+    if (attackerId && !entityExists(state, attackerId)) {
+        attackerWarn = ` [warn: unknown attacker '${attackerId}']`;
+    }
+
+    const rawTier = String(parsed.damage_tier || 'none');
+    if (rawTier === 'none') {
         return { ok: false, delta: 'No damage this exchange.' };
     }
-    const formula = RULES.tiers[tier];
-    if (formula === undefined) {
-        return { ok: false, delta: `Unknown damage tier '${tier}'.` };
+    if (!TIER_ORDER.includes(rawTier)) {
+        return { ok: false, rejected: 'bad_tier', delta: `Rejected: unknown damage tier '${rawTier}'.` };
     }
 
     const target = ensureEntity(state, targetId);
+    const attacker = attackerId && entityExists(state, attackerId) ? state.entities[attackerId] : null;
+    const attackType = parsed.attack_type || null;
+
+    // tier_shift (target's resistance/weakness by attack type), then resolve dice.
+    const effTier = applyTierShift(target, attackType, rawTier);
+    const formula = resolveFormula(state, attacker, effTier);
+    if (formula === undefined) {
+        return { ok: false, rejected: 'no_formula', delta: `Rejected: no dice table for tier '${effTier}'.` };
+    }
+
     const raw = rollFormula(formula);
     const dr = Number(target.armor_dr) || 0;
-    const taken = Math.max(0, raw - dr);
+    let taken = Math.max(0, raw - dr);
+
+    // Safeguard: damage governor. Cap a single hit as a fraction of maxhp so a
+    // misclassified heavy can't one-shot. Critical (or configured tiers) exempt.
+    const gov = RULES.governor || {};
+    let governed = false;
+    if (gov.enabled && !(gov.exempt_tiers || []).includes(effTier)) {
+        const cap = Math.floor((Number(target.maxhp) || 0) * (Number(gov.max_fraction) || 1));
+        if (cap > 0 && taken > cap) {
+            taken = cap;
+            governed = true;
+        }
+    }
+
     const before = Number(target.hp) || 0;
     target.hp = Math.max(0, before - taken);
 
@@ -148,13 +236,15 @@ function applyAction(state, parsed) {
         target.conditions = RULES.unconscious_condition || 'unconscious';
     }
 
-    const attacker = parsed.attacker ? sanitizeId(parsed.attacker) : 'attacker';
-    const verb = parsed.attack_type || 'hit';
+    const verb = attackType || 'hit';
+    const shiftNote = effTier !== rawTier ? ` (shifted ${rawTier}->${effTier})` : '';
     const delta =
-        `${attacker} -> ${targetId}: ${verb} (${tier}) rolled ${raw}` +
+        `${attackerId || 'attacker'} -> ${targetId}: ${verb} (${rawTier})${shiftNote} rolled ${raw}` +
         (dr ? `, armor DR ${dr}` : '') +
+        (governed ? `, capped to ${taken}` : '') +
         `, ${taken} damage. HP ${before} -> ${target.hp}/${target.maxhp}` +
-        (target.hp <= downAt ? ' [DOWN]' : '');
+        (target.hp <= downAt ? ' [DOWN]' : '') +
+        attackerWarn;
 
     return { ok: true, delta };
 }

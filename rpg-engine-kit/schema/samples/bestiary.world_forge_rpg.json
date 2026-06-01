@@ -2,6 +2,11 @@
     "kind": "bestiary",
     "schema_version": "1.0.0",
     "world_id": "lucifer",
+    "tier_tables": {
+        "1": { "graze": "1d4", "light": "1d6", "medium": "1d8", "heavy": "2d6", "critical": "3d6" },
+        "3": { "graze": "1d6", "light": "2d6", "medium": "2d10", "heavy": "3d10", "critical": "5d10" },
+        "5": { "graze": "2d6", "light": "3d8", "medium": "4d10", "heavy": "6d10", "critical": "8d12+10" }
+    },
     "global_damage_tiers": {
         "graze": "1d4",
         "light": "1d6",

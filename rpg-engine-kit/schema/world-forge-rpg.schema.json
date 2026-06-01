@@ -210,8 +210,20 @@
                 "kind": { "const": "bestiary" },
                 "schema_version": { "type": "string" },
                 "world_id": { "type": "string" },
+                "tier_tables": {
+                    "description": "Per-tier dice tables: the canonical way World-Forge expresses world balance ('a tier-5 monster's heavy hits like this'). Keys are tier numbers as strings ('1'..'5'). A monster's own combat.damage_tiers overrides this; this overrides global_damage_tiers. Resolution order: entity -> tier_tables[tier] -> global_damage_tiers -> engine demo fallback.",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "1": { "$ref": "#/$defs/damageTierTable" },
+                        "2": { "$ref": "#/$defs/damageTierTable" },
+                        "3": { "$ref": "#/$defs/damageTierTable" },
+                        "4": { "$ref": "#/$defs/damageTierTable" },
+                        "5": { "$ref": "#/$defs/damageTierTable" }
+                    }
+                },
                 "global_damage_tiers": {
-                    "description": "Optional bestiary-wide fallback tier table for monsters that don't define their own.",
+                    "description": "Optional bestiary-wide fallback tier table for monsters that define neither their own combat.damage_tiers nor a matching tier_tables entry.",
                     "$ref": "#/$defs/damageTierTable"
                 },
                 "monsters": {

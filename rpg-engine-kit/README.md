@@ -80,29 +80,46 @@ guarantees the numbers reflect it.
   "action_valid": true,
   "attacker": "player",
   "target": "orc_captain",
-  "attack_type": "slash",
-  "damage_tier": "medium"
+  "attack_type": "slashing",
+  "damage_tier": "medium",
+  "evidence": "the blade bites into the captain's flank"
 }
 ```
 
+## Mislabel safeguards
+
+The parser's tier choice is the one fallible step; everything after it is deterministic.
+Four layers keep a bad label cheap (full rationale in `schema/README.md`):
+
+1. **Constrain** — `damage_tier` is a strict enum; a rubric in the parser prompt anchors each
+   tier to concrete narrative cues and says "when unsure, pick the lower tier".
+2. **Gate** — combat-mode flag (button) + a keyword regex mean the parser usually doesn't fire
+   at all outside fights. The triggering keyword is passed to the parser as an anchor.
+3. **Validate** — the engine rejects unknown `target`/`attacker` (hallucinated combatants), and
+   the client skips applying if the `evidence` quote isn't actually in the narration.
+4. **Contain** — a **damage governor** (`rules.json.governor`) caps a single non-crit hit at a
+   fraction of `maxhp` (default 35%) so a misclassified `heavy` can't one-shot.
+
 ## Tuning
 
-- **Damage tiers:** edit `server-plugin/rules.json` (`tiers` maps each tier to a dice
-  formula; `npc_template` is the default NPC; `unconscious_at` is the down threshold).
-- **Injection depth:** Extensions → RPG Engine → *Injection depth* (default 2 = near the
-  end of the chat, so it dominates attention).
-- **Parser model:** the parser uses the main connection's `generateRaw` with a JSON
-  schema. To run it on a cheaper/faster model, swap the call for
-  `ConnectionManagerRequestService.sendRequest(profileId, ...)` and add a profile picker
-  to the settings (see `public/scripts/extensions/shared.js`).
+- **Damage tiers:** edit `server-plugin/rules.json` (`tiers` maps each tier to a dice formula;
+  `npc_template` is the default NPC; `governor` caps per-hit damage). Real games override these
+  with World-Forge per-entity / per-tier tables — `rules.json` is the demo fallback.
+- **Combat mode & keywords:** Extensions → RPG Engine → *Enter Combat Mode*, plus the two gate
+  checkboxes and the keyword list in settings.
+- **Injection depth:** *Injection depth* (default 2 = near the end of the chat).
+- **Parser model:** `generateRaw` uses the active preset's connection and sampler settings (it
+  has **no** per-call temperature override). For a cheap, stable, low-temperature parser, swap
+  the call for `ConnectionManagerRequestService.sendRequest(profileId, ...)` pointed at a
+  dedicated low-temp profile (see `public/scripts/extensions/shared.js`).
 
 ## Honest limitations
 
-- **Two LLM calls per turn** (reply + parser) — keep `parserMaxTokens` low and the
-  parser model small.
-- **Structured output support varies by backend.** OpenAI-compatible APIs honor the
-  JSON schema strictly; others fall back to best-effort parsing.
-- **`action_valid` is advisory.** The server still decides the numbers; the model can't
-  apply damage it didn't earn, but it can mislabel a tier. Tune the parser prompt.
-- **`msgIdx` is the chat index.** Swipes reuse the index, so `/apply` rolls back to the
-  snapshot before re-applying — damage is never double-counted on a swipe.
+- **Two LLM calls per turn** (reply + parser) — keep `parserMaxTokens` low, the parser model
+  small, and lean on the combat-mode/keyword gates to skip non-combat turns.
+- **Structured output support varies by backend.** OpenAI-compatible APIs honor the JSON schema
+  strictly; others fall back to best-effort parsing.
+- **The tier choice is still soft.** Safeguards make mislabels cheap and auto-reject the obvious
+  ones, but the model can still pick a wrong-but-plausible tier. Undo is the backstop.
+- **`msgIdx` is the chat index.** Swipes reuse the index, so `/apply` rolls back to the snapshot
+  before re-applying — damage is never double-counted on a swipe.

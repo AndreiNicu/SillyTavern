@@ -332,7 +332,7 @@ async function init(router) {
 
             const result = applyAction(state, parsed);
             await writeJson(activePath(req, chatId), state);
-            res.json({ ok: result.ok, delta: result.delta, state, sheet: formatSheet(state) });
+            res.json({ ok: result.ok, delta: result.delta, rejected: result.rejected, state, sheet: formatSheet(state) });
         } catch (err) {
             console.error('[rpg-engine] /apply failed', err);
             res.status(500).json({ ok: false, error: String(err.message || err) });

@@ -10,6 +10,10 @@
 Because two independent Claude instances edit the two repos, this file is the seam where they
 agree. Both repos should run `validate.cjs` in CI so the contract can't drift silently.
 
+> **Working in the World-Forge repo?** Start with **[`WORLD-FORGE-GUIDE.md`](./WORLD-FORGE-GUIDE.md)** —
+> a producer-focused walkthrough of what to emit, where it goes, and the balance rules. This file
+> below is the reference; the guide is the onboarding.
+
 ## The one rule that matters
 
 **Numbers in this schema are STARTING values only.** Once a game begins, the engine owns all

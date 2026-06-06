@@ -1701,7 +1701,7 @@ async function activateLlmRouter(enabledMembers, lastMessage, activationText, is
             closing,
         ].join('\n');
 
-        const result = await ConnectionManagerRequestService.sendRequest(profileId, prompt, DEFAULT_ROUTER_MAX_TOKENS);
+        const result = await ConnectionManagerRequestService.sendRequest(profileId, prompt, DEFAULT_ROUTER_MAX_TOKENS, { deterministic: true });
         const content = (result && typeof result === 'object' && 'content' in result) ? String(result.content ?? '') : '';
         const parsedEntries = parseRouterOutput(content, enabledMembers);
         const orderedEntries = parsedEntries

@@ -4750,7 +4750,7 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
 
     let content = '';
     try {
-        const result = await ConnectionManagerRequestService.sendRequest(world_info_llm_filter_profile, prompt, LLM_FILTER_MAX_TOKENS);
+        const result = await ConnectionManagerRequestService.sendRequest(world_info_llm_filter_profile, prompt, LLM_FILTER_MAX_TOKENS, { deterministic: true });
         content = (result && typeof result === 'object' && 'content' in result) ? String(result.content ?? '') : '';
     } catch (error) {
         eventSource.emit(event_types.LLM_DECISION_CALL, {

@@ -88,14 +88,19 @@ export let world_info_llm_filter_system_prompt = '';
 
 const DEFAULT_LLM_FILTER_PROMPT = `You are a relevance filter for roleplay world info entries. You will see (optionally) an author's note describing the current story beat or scene context, recent chat messages, and a numbered list of candidate entries — each shows the entry title, primary keys, and secondary keys (no entry content).
 
-Your job: pick which entries are clearly relevant to what is happening in the chat right now. Use semantic understanding — synonyms count when the meaning matches.
+Your job: pick which entries are relevant to what is happening in the chat right now. Use semantic understanding — synonyms count when the meaning matches.
 
-Rules:
-- If an author's note is provided, weigh it heavily. It often names the current story beat, location, or active characters and is the author's explicit hint about what is in play.
-- INCLUDE an entry when its named subject (character, place, item, faction, concept) is in play, even via a synonym (e.g. "stallion" should activate a "horse" entry).
-- DO NOT include an entry just because a key word appears generically. If an entry titled "Excalibur" has the key "sword" and the chat says "I drew my sword", do NOT activate Excalibur — that is a generic sword, not the named one.
-- Secondary keys further constrain relevance; respect them.
-- When in doubt, EXCLUDE. False positives waste prompt budget.
+Apply these rules in priority order (rule 1 is the highest priority and overrides the others whenever they conflict):
+
+1. EXPLICIT NAME MATCH — ALWAYS INCLUDE. If the recent messages contain a name or term that matches an entry's title or one of its keys, either exactly or as an obvious variant (for example "Mrs. Adams" matches the key "Mrs. Adams"; "Sandra" matches "Sandra Adams"; "the Carr kid" matches "Billy Carr"), you MUST include that entry. This holds even if you are unsure how the entity fits the scene, even if it is only being asked about ("Who is X?", "Is that really X?", "Do you know X?"), even if the entity is not physically present, and even if a character in the chat gives a vague, uncertain, mistaken, or contradictory answer. An explicit mention by name is decisive — do not reason your way out of it.
+
+2. NAMED SUBJECT IN PLAY. Include an entry when its named subject (character, place, item, faction, concept) is in play, including via a clear synonym (for example "stallion" should activate a "horse" entry).
+
+3. AUTHOR'S NOTE. If an author's note is provided, weigh it heavily — it often names the current story beat, location, or active characters that are in play.
+
+4. GENERIC-WORD GUARD. Do NOT include an entry only because one of its keys is a common word used generically. For example an entry "Excalibur" whose key is "sword" must NOT fire on "I drew my sword" — that is a generic sword, not the named one. A proper name is never a generic word, so this guard can never override rule 1. Use secondary keys to settle borderline generic cases.
+
+5. WEAK MATCHES — WHEN IN DOUBT, EXCLUDE. For vague, thematic, or generic matches you are unsure about, leave them out; false positives waste budget. This applies only to weak matches and never to an explicit name match (rule 1).
 
 Output format: a JSON array of integer indices and nothing else.
 Examples: [1,3,7]   [2]   []`;

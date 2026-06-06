@@ -389,6 +389,42 @@ async function onChatDeleted(deletedChatId) {
     }
 }
 
+/**
+ * One-time migration: when a chat opens, flip any older keyword-triggered key
+ * moments in OUR owned chat-bound book to Constant. Older recorded moments were
+ * keyword-triggered and thus appeared in the WI LLM filter's candidate list;
+ * making them Constant removes them from the picker (restoring its original
+ * behavior) while keeping them injected. Idempotent and only touches books we
+ * own — a user's manually-bound lorebook is never modified.
+ */
+async function migrateOwnedBookToConstant() {
+    try {
+        const book = chat_metadata[METADATA_KEY];
+        if (!book || !world_names.includes(book)) return;
+
+        const data = await loadWorldInfo(book);
+        if (!data?.entries || typeof data.entries !== 'object') return;
+        if (data.extensions?.[KM_OWNER_TAG]?.owned !== true) return; // not our book
+
+        let changed = 0;
+        for (const uid of Object.keys(data.entries)) {
+            const entry = data.entries[uid];
+            if (entry && !entry.constant) {
+                entry.constant = true;
+                changed++;
+            }
+        }
+
+        if (changed > 0) {
+            await saveWorldInfo(book, data, true);
+            reloadEditor(book);
+            log(`migrated ${changed} key-moment entr${changed === 1 ? 'y' : 'ies'} to Constant in "${book}"`);
+        }
+    } catch (e) {
+        warn('constant migration failed (non-fatal)', e);
+    }
+}
+
 // --------------------------------- UI --------------------------------------
 
 const WINDOW_HTML = `
@@ -742,6 +778,7 @@ export function init() {
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
     eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
+    eventSource.on(event_types.CHAT_CHANGED, migrateOwnedBookToConstant);
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initKeyMomentsUI, { once: true });

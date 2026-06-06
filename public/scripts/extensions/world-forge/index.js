@@ -1,12 +1,17 @@
-import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId } from '../../../script.js';
+import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { ConnectionManagerRequestService } from '../shared.js';
 import {
     loadWorldInfo,
     saveWorldInfo,
     createWorldInfoEntry,
+    createNewWorldInfo,
+    deleteWorldInfo,
+    getFreeWorldName,
     reloadEditor,
+    world_names,
     world_info_llm_filter_profile,
+    METADATA_KEY,
 } from '../../world-info.js';
 
 const SETTINGS_KEY = 'world_forge';
@@ -216,17 +221,49 @@ async function callSmallLlm(prompt, maxTokens) {
     return stripReasoning(content);
 }
 
+const KM_OWNER_TAG = 'world_forge_key_moments';
+
 /**
- * Resolve (creating if needed) the chat-bound lorebook name.
- * Delegates to the core /getchatbook slash command so metadata + UI stay in sync.
- * @returns {Promise<string>}
+ * Build a flat, chat-named lorebook filename for the current chat. SillyTavern's
+ * World Info engine only lists flat files in the worlds directory, so the chat
+ * name is encoded in the filename rather than a subfolder.
+ * @param {string} chatId
+ * @returns {string}
+ */
+function chatBookBaseName(chatId) {
+    const base = `Key Moments - ${chatId}`
+        .replace(/[^a-z0-9 _-]/gi, '_')
+        .replace(/_{2,}/g, '_')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+        .substring(0, 100);
+    return base || 'Key Moments';
+}
+
+/**
+ * Resolve the chat-bound lorebook, creating a chat-named one if the chat isn't
+ * bound yet. Returns whether we created it (so we know we may take ownership of
+ * it for cleanup-on-delete; a pre-existing user-bound book is left unowned).
+ * @returns {Promise<{book: string, created: boolean}>}
  */
 async function getOrCreateChatBook() {
-    const ctx = getContext();
-    const result = await ctx.executeSlashCommandsWithOptions('/getchatbook');
-    const name = String(result?.pipe ?? '').trim();
-    if (!name) throw new Error('Could not resolve the chat-bound lorebook.');
-    return name;
+    const chatId = getCurrentChatId();
+    if (!chatId) throw new Error('Open a chat first.');
+
+    const existing = chat_metadata[METADATA_KEY];
+    if (existing && world_names.includes(existing)) {
+        return { book: existing, created: false };
+    }
+
+    const base = chatBookBaseName(chatId);
+    const name = world_names.includes(base) ? getFreeWorldName(base) : base;
+    if (!name) throw new Error('Could not allocate a lorebook name.');
+
+    await createNewWorldInfo(name);
+    chat_metadata[METADATA_KEY] = name;
+    await saveMetadata();
+    $('.chat_lorebook_button').addClass('world_set');
+    return { book: name, created: true };
 }
 
 /**
@@ -236,13 +273,22 @@ async function getOrCreateChatBook() {
  * @returns {Promise<{book: string, added: number}>}
  */
 async function insertKeyMoments(moments) {
-    const book = await getOrCreateChatBook();
+    const { book, created } = await getOrCreateChatBook();
     const data = await loadWorldInfo(book);
     if (!data || typeof data !== 'object') throw new Error(`Failed to load lorebook "${book}".`);
     if (!data.entries || typeof data.entries !== 'object') data.entries = {};
 
     // Per-book flag the user requested: "Disable inclusion group competition".
     data.disable_inclusion_group_competition = true;
+
+    // Stamp ownership so the book can be cleaned up when its chat is deleted.
+    // Only books we created (or already own) are tagged — never a user's
+    // pre-existing manually-bound lorebook, which must survive chat deletion.
+    const alreadyOwned = data.extensions?.[KM_OWNER_TAG]?.owned === true;
+    if (created || alreadyOwned) {
+        if (!data.extensions || typeof data.extensions !== 'object') data.extensions = {};
+        data.extensions[KM_OWNER_TAG] = { owned: true, chat_id: String(getCurrentChatId() ?? '') };
+    }
 
     let added = 0;
     for (const moment of moments) {
@@ -268,6 +314,37 @@ async function insertKeyMoments(moments) {
     reloadEditor(book);
 
     return { book, added };
+}
+
+/**
+ * When a chat is deleted, remove any key-moments lorebook we created for it.
+ * Matches only books we own (tagged) whose recorded chat_id equals the deleted
+ * chat — never a user's manually-bound or global lorebook.
+ * @param {string} deletedChatId Chat name/id from CHAT_DELETED / GROUP_CHAT_DELETED
+ */
+async function onChatDeleted(deletedChatId) {
+    try {
+        const id = String(deletedChatId ?? '').replace(/\.jsonl$/i, '').trim();
+        if (!id) return;
+
+        const res = await fetch('/api/worldinfo/list', { method: 'POST', headers: getRequestHeaders() });
+        if (!res.ok) return;
+        const list = await res.json();
+        if (!Array.isArray(list)) return;
+
+        const owned = list.filter((w) => {
+            const tag = w?.extensions?.[KM_OWNER_TAG];
+            return tag?.owned === true && String(tag.chat_id ?? '') === id;
+        });
+
+        for (const w of owned) {
+            const name = w.file_id;
+            const deleted = await deleteWorldInfo(name);
+            log(`chat "${id}" deleted → removed key-moments lorebook "${name}" (${deleted ? 'ok' : 'not found'})`);
+        }
+    } catch (e) {
+        warn('cleanup on chat delete failed', e);
+    }
 }
 
 // --------------------------------- UI --------------------------------------
@@ -621,6 +698,8 @@ function registerSlashCommands() {
 export function init() {
     getSettings();
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
+    eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
+    eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initKeyMomentsUI, { once: true });

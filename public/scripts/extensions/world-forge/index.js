@@ -192,9 +192,10 @@ const KM_STOPWORDS = new Set([
 ]);
 
 /**
- * Derive at least one trigger keyword from a moment's title/content when the
- * model didn't supply any. A keyword entry with no keys can never activate (and
- * is excluded from the WI LLM filter), so this guarantees the entry is usable.
+ * Derive trigger keywords from a moment's title/content when the model didn't
+ * supply any. Recorded moments are Constant (always-on), so keys aren't required
+ * for activation, but they're kept as useful metadata and let an entry also be
+ * found or matched by keyword if its type is later changed in the WI editor.
  * Prefers proper nouns (capitalised tokens), then any significant words.
  * @param {string} title
  * @param {string} content
@@ -313,14 +314,14 @@ async function insertKeyMoments(moments) {
     if (!data || typeof data !== 'object') throw new Error(`Failed to load lorebook "${book}".`);
     if (!data.entries || typeof data.entries !== 'object') data.entries = {};
 
-    // Per-book flag the user requested: "Disable inclusion group competition".
-    data.disable_inclusion_group_competition = true;
-
-    // Stamp ownership so the book can be cleaned up when its chat is deleted.
-    // Only books we created (or already own) are tagged — never a user's
-    // pre-existing manually-bound lorebook, which must survive chat deletion.
+    // Only mutate book-level settings / take ownership for books our feature
+    // created or already owns — never a user's pre-existing manually-bound
+    // lorebook (which must keep its own settings and survive chat deletion).
     const alreadyOwned = data.extensions?.[KM_OWNER_TAG]?.owned === true;
     if (created || alreadyOwned) {
+        // Per-book flag the user requested: "Disable inclusion group competition".
+        data.disable_inclusion_group_competition = true;
+        // Stamp ownership so the book can be cleaned up when its chat is deleted.
         if (!data.extensions || typeof data.extensions !== 'object') data.extensions = {};
         data.extensions[KM_OWNER_TAG] = { owned: true, chat_id: String(getCurrentChatId() ?? '') };
     }
@@ -333,16 +334,18 @@ async function insertKeyMoments(moments) {
         let keywords = Array.isArray(moment?.keywords)
             ? moment.keywords.map(k => String(k).trim()).filter(Boolean).slice(0, 10)
             : [];
-        // Guarantee at least one trigger keyword. Without keys the entry can never
-        // activate (regex scan) and is skipped by the WI LLM filter candidate list.
         if (keywords.length === 0) keywords = deriveKeywords(title, content);
-        if (keywords.length === 0) continue;
 
         const entry = createWorldInfoEntry(book, data);
         if (!entry) continue;
         entry.comment = title || content.slice(0, 50);
         entry.content = content;
         entry.key = keywords;
+        // Constant (always-on): key moments are injected directly and stay OUT of
+        // the WI LLM filter's candidate list (getLlmFilterCandidates skips constants).
+        // This stops recorded moments from diluting the filter's picks for other
+        // lorebooks, while keeping them reliably in context.
+        entry.constant = true;
         added++;
     }
 
@@ -383,6 +386,42 @@ async function onChatDeleted(deletedChatId) {
         }
     } catch (e) {
         warn('cleanup on chat delete failed', e);
+    }
+}
+
+/**
+ * One-time migration: when a chat opens, flip any older keyword-triggered key
+ * moments in OUR owned chat-bound book to Constant. Older recorded moments were
+ * keyword-triggered and thus appeared in the WI LLM filter's candidate list;
+ * making them Constant removes them from the picker (restoring its original
+ * behavior) while keeping them injected. Idempotent and only touches books we
+ * own — a user's manually-bound lorebook is never modified.
+ */
+async function migrateOwnedBookToConstant() {
+    try {
+        const book = chat_metadata[METADATA_KEY];
+        if (!book || !world_names.includes(book)) return;
+
+        const data = await loadWorldInfo(book);
+        if (!data?.entries || typeof data.entries !== 'object') return;
+        if (data.extensions?.[KM_OWNER_TAG]?.owned !== true) return; // not our book
+
+        let changed = 0;
+        for (const uid of Object.keys(data.entries)) {
+            const entry = data.entries[uid];
+            if (entry && !entry.constant) {
+                entry.constant = true;
+                changed++;
+            }
+        }
+
+        if (changed > 0) {
+            await saveWorldInfo(book, data, true);
+            reloadEditor(book);
+            log(`migrated ${changed} key-moment entr${changed === 1 ? 'y' : 'ies'} to Constant in "${book}"`);
+        }
+    } catch (e) {
+        warn('constant migration failed (non-fatal)', e);
     }
 }
 
@@ -441,8 +480,8 @@ const SETTINGS_HTML = `
                 <input id="wf_km_context_messages" class="neo-range-slider" type="range" min="1" max="50" step="1" />
                 <input id="wf_km_context_messages_counter" class="neo-range-input" type="number" min="1" max="50" step="1" />
             </div>
-            <small class="notes" data-i18n="Uses the same Connection Profile as World Info → LLM Filter.">
-                Uses the same Connection Profile as World Info → LLM Filter. Recorded moments go into the chat-bound lorebook with inclusion-group competition disabled.
+            <small class="notes">
+                Uses the same Connection Profile as World Info → LLM Filter. Recorded moments are saved as always-on (Constant) entries in the chat-bound lorebook, so they're injected directly and are not picked over by the LLM filter.
             </small>
         </div>
     </div>
@@ -739,6 +778,7 @@ export function init() {
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
     eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
+    eventSource.on(event_types.CHAT_CHANGED, migrateOwnedBookToConstant);
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initKeyMomentsUI, { once: true });

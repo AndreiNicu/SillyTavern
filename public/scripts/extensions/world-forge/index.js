@@ -40,6 +40,7 @@ const DEFAULT_SUMMARIZE_PROMPT = [
     'You are recording selected key moments into a memory lorebook.',
     'For EACH selected key moment, write a concise, on-point description (1-3 sentences) capturing what happened and why it matters later,',
     'and provide 1-5 short trigger keywords (names, places, objects, concepts) that should make this memory resurface.',
+    'ALWAYS include at least one keyword per moment — these are how the entry gets pulled back into context later.',
     'Keep descriptions factual and self-contained — they will be read out of chat context.',
     '',
     'Reply with ONLY a JSON array of objects in this exact shape:',
@@ -182,6 +183,40 @@ function extractJsonArray(text) {
     return null;
 }
 
+const KM_STOPWORDS = new Set([
+    'the', 'a', 'an', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'at', 'for', 'with', 'as', 'is',
+    'are', 'was', 'were', 'be', 'been', 'his', 'her', 'their', 'its', 'our', 'your', 'my', 'he',
+    'she', 'they', 'it', 'we', 'you', 'i', 'that', 'this', 'these', 'those', 'from', 'by', 'into',
+    'about', 'after', 'before', 'when', 'while', 'then', 'than', 'has', 'have', 'had', 'will',
+    'would', 'could', 'should', 'not', 'no', 'so', 'up', 'out', 'who', 'what', 'which', 'now',
+]);
+
+/**
+ * Derive at least one trigger keyword from a moment's title/content when the
+ * model didn't supply any. A keyword entry with no keys can never activate (and
+ * is excluded from the WI LLM filter), so this guarantees the entry is usable.
+ * Prefers proper nouns (capitalised tokens), then any significant words.
+ * @param {string} title
+ * @param {string} content
+ * @returns {string[]}
+ */
+function deriveKeywords(title, content) {
+    const words = `${title} ${content}`.match(/[A-Za-z][A-Za-z'-]{2,}/g) || [];
+    const proper = words.filter(w => /^[A-Z]/.test(w) && !KM_STOPWORDS.has(w.toLowerCase()));
+    const pool = (proper.length ? proper : words).filter(w => !KM_STOPWORDS.has(w.toLowerCase()));
+
+    const seen = new Set();
+    const result = [];
+    for (const w of pool) {
+        const lower = w.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        result.push(w);
+        if (result.length >= 5) break;
+    }
+    return result;
+}
+
 /**
  * Build the "oldest → newest" transcript of the last N visible messages.
  * @returns {string}
@@ -295,9 +330,13 @@ async function insertKeyMoments(moments) {
         const title = String(moment?.title ?? '').trim();
         const content = String(moment?.content ?? '').trim();
         if (!content) continue;
-        const keywords = Array.isArray(moment?.keywords)
+        let keywords = Array.isArray(moment?.keywords)
             ? moment.keywords.map(k => String(k).trim()).filter(Boolean).slice(0, 10)
             : [];
+        // Guarantee at least one trigger keyword. Without keys the entry can never
+        // activate (regex scan) and is skipped by the WI LLM filter candidate list.
+        if (keywords.length === 0) keywords = deriveKeywords(title, content);
+        if (keywords.length === 0) continue;
 
         const entry = createWorldInfoEntry(book, data);
         if (!entry) continue;

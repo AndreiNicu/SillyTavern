@@ -252,7 +252,7 @@ async function callSmallLlm(prompt, maxTokens) {
     if (!profileId) {
         throw new Error('No Connection Profile set. Configure it under World Info → "LLM Filter".');
     }
-    const result = await ConnectionManagerRequestService.sendRequest(profileId, prompt, maxTokens);
+    const result = await ConnectionManagerRequestService.sendRequest(profileId, prompt, maxTokens, { deterministic: true });
     const content = (result && typeof result === 'object' && 'content' in result) ? String(result.content ?? '') : '';
     return stripReasoning(content);
 }

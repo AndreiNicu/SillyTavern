@@ -11,6 +11,7 @@ import {
     reloadEditor,
     world_names,
     world_info_llm_filter_profile,
+    getSortedEntries,
     METADATA_KEY,
 } from '../../world-info.js';
 
@@ -64,6 +65,7 @@ function getSettings() {
     if (typeof s.enabled !== 'boolean') s.enabled = true;
     if (typeof s.debug !== 'boolean') s.debug = true;
     if (typeof s.keyMomentsEnabled !== 'boolean') s.keyMomentsEnabled = true;
+    if (typeof s.sceneTrackerEnabled !== 'boolean') s.sceneTrackerEnabled = true;
     if (typeof s.contextMessages !== 'number' || !Number.isFinite(s.contextMessages)) s.contextMessages = 10;
     s.contextMessages = Math.max(1, Math.min(50, Math.round(s.contextMessages)));
     return s;
@@ -128,6 +130,11 @@ function onChatCompletionPromptReady(eventData) {
     if (!settings.enabled) return;
     if (!eventData || eventData.dryRun) return;
 
+    injectStyleOverride(eventData, settings);
+    injectSceneState(eventData, settings);
+}
+
+function injectStyleOverride(eventData, settings) {
     const character = getActiveCharacter();
     if (!character) return;
 
@@ -149,6 +156,28 @@ function onChatCompletionPromptReady(eventData) {
         if (inserted) console.log(`${tag} → injected style_override after </style_contract> (${applied.join(', ')})`);
         else console.warn(`${tag} → override built but no </style_contract> marker found in any system message; nothing injected`);
     }
+}
+
+/**
+ * Splice the per-chat Scene Tracker state into the prompt as a system message
+ * near the end (high recency) so the model stays aware of where the scene is,
+ * who's present, and each character's condition. Gated by the per-chat
+ * "Inject into prompt" toggle.
+ */
+function injectSceneState(eventData, settings) {
+    if (!getCurrentChatId()) return;
+    const scene = getSceneData();
+    if (!scene.inject) return;
+
+    const block = buildSceneBlock(scene);
+    if (!block) return;
+
+    const resolved = substituteParams(block);
+    const chatArr = eventData.chat;
+    if (!Array.isArray(chatArr)) return;
+    const insertAt = Math.max(0, chatArr.length - 1);
+    chatArr.splice(insertAt, 0, { role: 'system', content: resolved });
+    if (settings.debug) console.log('[world-forge] → injected <scene_state> before final message');
 }
 
 // ------------------------------- helpers -----------------------------------
@@ -425,6 +454,187 @@ async function migrateOwnedBookToConstant() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scene Tracker — a per-chat record of the current scene: where it's happening,
+// who is present, and the basic condition of each non-player character. Stored
+// in chat_metadata (like the chat-bound lorebook) and optionally injected into
+// the prompt so the model keeps track of scene state across turns.
+// ---------------------------------------------------------------------------
+const SCENE_META_KEY = 'world_forge_scene';
+const SCENE_EXTRACT_MAX_TOKENS = 1024;
+
+/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
+/** @typedef {{location: string, present: ScenePerson[], inject: boolean}} SceneData */
+
+/** @returns {SceneData} */
+function defaultSceneData() {
+    return { location: '', present: [], inject: true };
+}
+
+/**
+ * Read (and lazily normalise) the current chat's scene record. Returns a live
+ * reference held in chat_metadata so edits mutate in place; call saveSceneData
+ * to persist.
+ * @returns {SceneData}
+ */
+function getSceneData() {
+    let s = chat_metadata[SCENE_META_KEY];
+    if (!s || typeof s !== 'object') {
+        s = defaultSceneData();
+        chat_metadata[SCENE_META_KEY] = s;
+    }
+    if (typeof s.location !== 'string') s.location = '';
+    if (!Array.isArray(s.present)) s.present = [];
+    if (typeof s.inject !== 'boolean') s.inject = true;
+    for (const p of s.present) {
+        if (p && p.role !== 'user' && p.role !== 'character' && p.role !== 'npc') p.role = 'npc';
+    }
+    return s;
+}
+
+let saveSceneTimer = null;
+function saveSceneData() {
+    if (saveSceneTimer) clearTimeout(saveSceneTimer);
+    saveSceneTimer = setTimeout(() => {
+        saveSceneTimer = null;
+        try {
+            saveMetadata();
+        } catch (e) {
+            warn('saveMetadata failed', e);
+        }
+    }, 400);
+}
+
+/**
+ * Render the scene record as a compact, prompt-friendly block. Lines with no
+ * data are omitted; returns '' when there's nothing worth injecting.
+ * @param {SceneData} scene
+ * @returns {string}
+ */
+function buildSceneBlock(scene) {
+    const lines = [];
+    const location = String(scene.location || '').trim();
+    if (location) lines.push(`Location: ${location}`);
+
+    const present = (scene.present || []).filter(p => p && String(p.name || '').trim());
+    if (present.length) {
+        const names = present.map(p => (p.role === 'user' ? `${p.name} (you)` : p.name));
+        lines.push(`Present: ${names.join(', ')}`);
+
+        const status = [];
+        for (const p of present) {
+            if (p.role === 'user') continue;
+            const bits = [];
+            if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
+            if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
+            if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
+            if (bits.length) status.push(`- ${p.name} — ${bits.join('; ')}`);
+        }
+        if (status.length) {
+            lines.push('Character status:');
+            lines.push(...status);
+        }
+    }
+
+    if (!lines.length) return '';
+    return `<scene_state>\n${lines.join('\n')}\n</scene_state>`;
+}
+
+const SCENE_EXTRACT_PROMPT = [
+    'You are tracking the current SCENE of a roleplay/story transcript.',
+    'From the recent messages, determine the present state of the scene:',
+    '- "location": a short description of where the scene is currently happening.',
+    '- "present": the characters/NPCs (and the user, if they are in the scene) currently in it.',
+    '  For each, give: "name"; "role" (one of "user", "character", or "npc" — "character" = a main AI character, "npc" = a minor/side character);',
+    '  and for non-user entries the best current "health" (e.g. healthy, wounded, exhausted),',
+    '  "condition" (any injury/soreness/status, or "" if none), and "lastLocation" (where they were last seen, or "").',
+    'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
+    '',
+    'Reply with ONLY a JSON object of this exact shape:',
+    '{"location": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "lastLocation": "..."}]}',
+].join('\n');
+
+/**
+ * Tolerant JSON-object extractor (mirrors extractJsonArray but for objects).
+ * @param {string} text
+ * @returns {Record<string, any>|null}
+ */
+function extractJsonObject(text) {
+    if (!text) return null;
+    const s = String(text).replace(/```(?:json)?/gi, '').trim();
+    try {
+        const v = JSON.parse(s);
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+    } catch { /* fall through */ }
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+        try {
+            const v = JSON.parse(s.slice(start, end + 1));
+            if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+        } catch { /* give up */ }
+    }
+    return null;
+}
+
+/**
+ * Run the secondary LLM over recent messages and merge the result into the
+ * current scene record. Location is replaced; present cast is merged by name so
+ * hand-edited stats survive unless the model has fresher detail. The roster is
+ * never touched here.
+ * @returns {Promise<{location: string, present: number}>}
+ */
+async function refreshSceneFromChat() {
+    if (!getCurrentChatId()) throw new Error('Open a chat first.');
+    const transcript = buildRecentTranscript();
+    if (!transcript) throw new Error('No messages to scan in this chat.');
+
+    const prompt = [
+        SCENE_EXTRACT_PROMPT,
+        '',
+        'RECENT MESSAGES (oldest → newest):',
+        transcript,
+        '',
+        'Reply with only the JSON object describing the current scene.',
+    ].join('\n');
+
+    const content = await callSmallLlm(prompt, SCENE_EXTRACT_MAX_TOKENS);
+    const parsed = extractJsonObject(content);
+    if (!parsed) {
+        log('scene refresh: unparseable response', content);
+        throw new Error('Could not parse the model reply.');
+    }
+
+    const scene = getSceneData();
+    if (typeof parsed.location === 'string' && parsed.location.trim()) {
+        scene.location = parsed.location.trim();
+    }
+
+    const incoming = Array.isArray(parsed.present) ? parsed.present : [];
+    const byName = new Map(scene.present.map(p => [String(p.name || '').toLowerCase(), p]));
+    for (const raw of incoming) {
+        const name = String(raw?.name || '').trim();
+        if (!name) continue;
+        const role = (raw.role === 'user' || raw.role === 'character' || raw.role === 'npc') ? raw.role : 'npc';
+        const existing = byName.get(name.toLowerCase());
+        const next = existing || { name, role };
+        next.name = name;
+        next.role = role;
+        if (role !== 'user') {
+            if (String(raw.health || '').trim()) next.health = String(raw.health).trim();
+            if (String(raw.condition || '').trim()) next.condition = String(raw.condition).trim();
+            if (String(raw.lastLocation || '').trim()) next.lastLocation = String(raw.lastLocation).trim();
+        }
+        if (!existing) {
+            scene.present.push(next);
+            byName.set(name.toLowerCase(), next);
+        }
+    }
+
+    saveSceneData();
+    return { location: scene.location, present: scene.present.length };
+}
+
 // --------------------------------- UI --------------------------------------
 
 const WINDOW_HTML = `
@@ -474,6 +684,10 @@ const SETTINGS_HTML = `
             <label class="checkbox_label" for="wf_km_enabled">
                 <input id="wf_km_enabled" type="checkbox" />
                 <span data-i18n="Show the &quot;Add Key Moment&quot; button">Show the "Add Key Moment" button</span>
+            </label>
+            <label class="checkbox_label" for="wf_scene_enabled">
+                <input id="wf_scene_enabled" type="checkbox" />
+                <span data-i18n="Show the &quot;Scene Tracker&quot; button">Show the "Scene Tracker" button</span>
             </label>
             <label for="wf_km_context_messages" data-i18n="Messages to scan">Messages to scan</label>
             <div class="flex-container alignItemsCenter flexGap10">
@@ -688,9 +902,11 @@ function closeWindow() {
 function applySettingsToUI() {
     const s = getSettings();
     $('#wf_km_enabled').prop('checked', s.keyMomentsEnabled);
+    $('#wf_scene_enabled').prop('checked', s.sceneTrackerEnabled);
     $('#wf_km_context_messages').val(s.contextMessages);
     $('#wf_km_context_messages_counter').val(s.contextMessages);
     $('#wf_km_menu_button').toggle(!!s.keyMomentsEnabled);
+    $('#wf_scene_menu_button').toggle(!!s.sceneTrackerEnabled);
 }
 
 function wireSettings() {
@@ -700,6 +916,12 @@ function wireSettings() {
     $('#wf_km_enabled').on('input', function () {
         getSettings().keyMomentsEnabled = !!$(this).prop('checked');
         $('#wf_km_menu_button').toggle(getSettings().keyMomentsEnabled);
+        save();
+    });
+
+    $('#wf_scene_enabled').on('input', function () {
+        getSettings().sceneTrackerEnabled = !!$(this).prop('checked');
+        $('#wf_scene_menu_button').toggle(getSettings().sceneTrackerEnabled);
         save();
     });
 
@@ -773,6 +995,518 @@ function registerSlashCommands() {
     }));
 }
 
+// ----------------------------- Scene Tracker UI ----------------------------
+
+const SCENE_WINDOW_HTML = `
+<div id="wf_scene_window" class="wf_scene_window wf_scene_hidden">
+    <div class="wf_scene_header flex-container alignItemsCenter spaceBetween">
+        <h3 class="margin0">
+            <i class="fa-solid fa-masks-theater"></i>
+            <span data-i18n="Scene Tracker">Scene Tracker</span>
+        </h3>
+        <div class="flex-container flexGap5 alignItemsCenter">
+            <label class="wf_scene_inject" title="Inject scene state into the prompt">
+                <input id="wf_scene_inject" type="checkbox" />
+                <span data-i18n="Inject">Inject</span>
+            </label>
+            <div id="wf_scene_refresh" class="menu_button menu_button_icon" title="Refresh from recent messages">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+            </div>
+            <div id="wf_scene_close" class="menu_button menu_button_icon" title="Close">
+                <i class="fa-solid fa-xmark"></i>
+            </div>
+        </div>
+    </div>
+    <div class="wf_scene_tabs">
+        <div class="wf_scene_tab wf_scene_tab_active" data-tab="location" data-i18n="Location">Location</div>
+        <div class="wf_scene_tab" data-tab="present" data-i18n="In the Scene">In the Scene</div>
+        <div class="wf_scene_tab" data-tab="roster" data-i18n="NPC Roster">NPC Roster</div>
+    </div>
+    <div id="wf_scene_status" class="wf_scene_status"></div>
+    <div class="wf_scene_body">
+        <div id="wf_scene_pane_location" class="wf_scene_pane wf_scene_pane_active">
+            <label data-i18n="Where is the current scene happening?">Where is the current scene happening?</label>
+            <textarea id="wf_scene_location" class="text_pole wf_scene_location" rows="4"
+                placeholder="e.g. The rain-soaked back alley behind the Copper Lantern tavern, near midnight."></textarea>
+        </div>
+        <div id="wf_scene_pane_present" class="wf_scene_pane">
+            <div id="wf_scene_present_list" class="wf_scene_list"></div>
+            <div class="wf_scene_add_row">
+                <input id="wf_scene_present_name" class="text_pole" type="text" placeholder="Add someone to the scene…" />
+                <div id="wf_scene_present_add" class="menu_button" title="Add to scene"><i class="fa-solid fa-plus"></i></div>
+            </div>
+        </div>
+        <div id="wf_scene_pane_roster" class="wf_scene_pane">
+            <small class="notes" data-i18n="NPCs available in this roleplay's active lorebooks. Click + to add one to the scene.">NPCs available in this roleplay's active lorebooks. Click + to add one to the scene.</small>
+            <div class="wf_scene_roster_controls">
+                <select id="wf_scene_roster_book" class="text_pole"></select>
+                <div id="wf_scene_roster_reload" class="menu_button menu_button_icon" title="Reload from lorebooks"><i class="fa-solid fa-rotate"></i></div>
+            </div>
+            <input id="wf_scene_roster_search" class="text_pole" type="text" placeholder="Filter by name or content…" />
+            <label class="wf_scene_names_only" title="Show only entries whose title looks like a personal name">
+                <input id="wf_scene_roster_names_only" type="checkbox" checked />
+                <span data-i18n="Names only (NPCs)">Names only (NPCs)</span>
+            </label>
+            <div id="wf_scene_roster_count" class="wf_scene_roster_count"></div>
+            <div id="wf_scene_roster_list" class="wf_scene_list"></div>
+        </div>
+    </div>
+</div>`;
+
+const SCENE_BUTTON_HTML = `
+<div id="wf_scene_menu_button" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
+    <div class="fa-solid fa-masks-theater extensionsMenuExtensionButton" title="Toggle Scene Tracker"></div>
+    <span data-i18n="Scene Tracker">Scene Tracker</span>
+</div>`;
+
+const SCENE_CSS = `
+#wf_scene_window {
+    position: fixed !important;
+    top: var(--topBarBlockSize, 40px) !important;
+    right: 0 !important; left: auto !important; bottom: 0 !important;
+    width: 420px !important; max-width: 90vw !important;
+    margin: 0 !important; z-index: 3000;
+    background-color: var(--SmartThemeBlurTintColor, #1f1f1f);
+    color: var(--SmartThemeBodyColor, #e0e0e0);
+    border-left: 1px solid var(--SmartThemeBorderColor, #444);
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.35);
+    display: flex; flex-direction: column;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    padding: 0 !important; border-radius: 0 !important; overflow: hidden;
+}
+#wf_scene_window.wf_scene_hidden { display: none !important; }
+.wf_scene_header {
+    padding: 8px 12px; border-bottom: 1px solid var(--SmartThemeBorderColor, #444);
+    flex: 0 0 auto; user-select: none;
+}
+.wf_scene_inject { display: flex; align-items: center; gap: 4px; font-size: 0.85em; opacity: 0.85; cursor: pointer; }
+.wf_scene_inject input { margin: 0; }
+.wf_scene_tabs { display: flex; flex: 0 0 auto; border-bottom: 1px solid var(--SmartThemeBorderColor, #444); }
+.wf_scene_tab {
+    flex: 1 1 0; text-align: center; padding: 8px 4px; cursor: pointer;
+    opacity: 0.6; border-bottom: 2px solid transparent; user-select: none; font-size: 0.9em;
+}
+.wf_scene_tab:hover { opacity: 0.85; }
+.wf_scene_tab_active { opacity: 1; border-bottom-color: var(--SmartThemeQuoteColor, #6bb1ff); }
+.wf_scene_status { padding: 4px 12px 0; min-height: 0; font-size: 0.8em; opacity: 0.7; font-style: italic; }
+.wf_scene_status.wf_scene_error { color: var(--fullred, #e06666); font-style: normal; opacity: 1; }
+.wf_scene_body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 12px; }
+.wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
+.wf_scene_pane_active { display: flex; }
+.wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
+.wf_scene_list { display: flex; flex-direction: column; gap: 8px; }
+.wf_scene_person {
+    border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
+    padding: 8px; background: rgba(255, 255, 255, 0.03);
+}
+.wf_scene_person_head { display: flex; align-items: center; gap: 6px; }
+.wf_scene_person_head .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_scene_role {
+    flex: 0 0 auto; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 2px 6px; border-radius: 10px; cursor: pointer; user-select: none;
+    border: 1px solid var(--SmartThemeBorderColor, #555); opacity: 0.85; white-space: nowrap;
+}
+.wf_scene_stats { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; margin-top: 8px; align-items: center; }
+.wf_scene_stats label { font-size: 0.82em; opacity: 0.8; }
+.wf_scene_stats .text_pole { width: 100%; box-sizing: border-box; }
+.wf_scene_remove { flex: 0 0 auto; cursor: pointer; opacity: 0.6; }
+.wf_scene_remove:hover { opacity: 1; color: var(--fullred, #e06666); }
+.wf_scene_add_row { display: flex; gap: 6px; align-items: center; }
+.wf_scene_add_row .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_scene_roster_controls { display: flex; gap: 6px; align-items: center; }
+.wf_scene_roster_controls .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_scene_names_only { display: flex; align-items: center; gap: 6px; font-size: 0.82em; opacity: 0.85; cursor: pointer; }
+.wf_scene_names_only input { margin: 0; }
+.wf_scene_roster_count { font-size: 0.78em; opacity: 0.6; }
+.wf_scene_npc {
+    border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
+    padding: 6px 8px; background: rgba(255, 255, 255, 0.03);
+}
+.wf_scene_npc_head { display: flex; align-items: center; gap: 6px; }
+.wf_scene_npc_title { flex: 1 1 auto; min-width: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf_scene_npc_title b { font-weight: 600; }
+.wf_scene_npc_book { font-size: 0.72em; opacity: 0.55; }
+.wf_scene_npc_content { margin-top: 6px; font-size: 0.85em; opacity: 0.85; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
+.wf_scene_npc_in { opacity: 0.45; }
+.wf_scene_empty { opacity: 0.55; font-style: italic; padding: 8px 2px; }
+@media (max-width: 768px) { #wf_scene_window { width: 100vw; max-width: 100vw; } }`;
+
+function injectSceneStyles() {
+    if (document.getElementById('wf_scene_inline_styles')) return;
+    const style = document.createElement('style');
+    style.id = 'wf_scene_inline_styles';
+    style.textContent = SCENE_CSS;
+    document.head.appendChild(style);
+}
+
+let $sceneWindow = null;
+let $sceneStatus = null;
+let sceneOpen = false;
+
+function setSceneStatus(text, isError = false) {
+    if (!$sceneStatus) return;
+    $sceneStatus.text(text || '');
+    $sceneStatus.toggleClass('wf_scene_error', !!isError);
+}
+
+const ROLE_CYCLE = { npc: 'character', character: 'user', user: 'npc' };
+
+function renderPresent() {
+    const scene = getSceneData();
+    const $list = $('#wf_scene_present_list');
+    if (!$list.length) return;
+    $list.empty();
+
+    if (!scene.present.length) {
+        $list.append('<div class="wf_scene_empty">No one is in the scene yet. Add someone below, or hit Refresh.</div>');
+        return;
+    }
+
+    scene.present.forEach((person, idx) => {
+        const $card = $('<div class="wf_scene_person"></div>');
+        const $head = $('<div class="wf_scene_person_head"></div>');
+
+        const $role = $('<span class="wf_scene_role"></span>')
+            .text(person.role)
+            .attr('title', 'Click to change role (npc → character → user)')
+            .on('click', () => {
+                person.role = ROLE_CYCLE[person.role] || 'npc';
+                saveSceneData();
+                renderPresent();
+            });
+
+        const $name = $('<input class="text_pole" type="text">').val(person.name)
+            .on('input', function () { person.name = $(this).val(); saveSceneData(); });
+
+        const $remove = $('<div class="wf_scene_remove" title="Remove from scene"><i class="fa-solid fa-trash-can"></i></div>')
+            .on('click', () => { scene.present.splice(idx, 1); saveSceneData(); renderPresent(); });
+
+        $head.append($role, $name, $remove);
+        $card.append($head);
+
+        // Stats only for non-player (AI) characters & NPCs.
+        if (person.role !== 'user') {
+            const $stats = $('<div class="wf_scene_stats"></div>');
+            const field = (key, labelText, placeholder) => {
+                const $label = $('<label></label>').text(labelText);
+                const $input = $('<input class="text_pole" type="text">')
+                    .attr('placeholder', placeholder)
+                    .val(person[key] || '')
+                    .on('input', function () { person[key] = $(this).val(); saveSceneData(); });
+                $stats.append($label, $input);
+            };
+            field('health', 'Health', 'e.g. healthy, wounded');
+            field('condition', 'Injury / soreness', 'e.g. sprained ankle');
+            field('lastLocation', 'Last known location', 'optional');
+            $card.append($stats);
+        }
+
+        $list.append($card);
+    });
+}
+
+// The NPC Roster reads the roleplay's active lorebooks (character book, chat
+// book, global, persona) and presents their entries as a browsable directory of
+// available NPCs — each can be dropped into the scene with one click.
+const ALL_BOOKS = '__all__';
+let rosterEntries = [];
+let rosterLoaded = false;
+let rosterLoading = false;
+
+/** Title for a lorebook entry: its memo/comment, else its first keyword. */
+function entryTitle(entry) {
+    const comment = String(entry?.comment || '').trim();
+    if (comment) return comment;
+    const firstKey = Array.isArray(entry?.key) ? String(entry.key[0] || '').trim() : '';
+    return firstKey || '(untitled entry)';
+}
+
+// Lowercase tokens that are part of a name but not themselves capitalised name
+// words — name particles ("von Trapp", "de la Cruz") and honorifics ("Dr.",
+// "Sir"). They don't count toward, nor disqualify, a title looking like a name.
+const NAME_PARTICLES = new Set(['von', 'van', 'de', 'del', 'della', 'di', 'da', 'la', 'le', 'du', 'of', 'the', 'bin', 'al', 'mac', 'mc', 'san', 'st', 'dos', 'das', 'ten', 'ter']);
+const NAME_HONORIFICS = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'sir', 'lady', 'lord', 'capt', 'captain', 'prof', 'professor', 'father', 'sister', 'brother', 'king', 'queen', 'prince', 'princess', 'master', 'mistress', 'madam', 'madame', 'count', 'countess', 'baron', 'baroness', 'duke', 'duchess', 'general', 'sgt', 'sergeant', 'col', 'colonel', 'major', 'lt', 'lieutenant']);
+
+// Abstract nouns that mark a title as non-NPC lore even when capitalised like a
+// name ("World Rules", "Magic System Overview"). Deliberately limited to words
+// that are very unlikely to be a person's name.
+const NON_NAME_WORDS = new Set(['rules', 'system', 'systems', 'overview', 'lore', 'timeline', 'history', 'map', 'faction', 'factions', 'guide', 'summary', 'glossary', 'index', 'mechanics', 'setting', 'settings', 'location', 'locations', 'inventory', 'quest', 'quests', 'background', 'intro', 'introduction', 'notes', 'readme', 'template', 'prompt', 'instructions', 'worldbuilding', 'world', 'rule', 'info', 'information', 'list']);
+
+/**
+ * First-release heuristic for "this title looks like a personal name". Structural
+ * (not dictionary-based) so it works for invented/fantasy names too: 1–4 words,
+ * letters plus name punctuation only, each significant word Capitalised and not a
+ * SHOUTED heading. Rejects entries with digits, symbols, or colons (typically
+ * non-NPC lore like "World Rules", "Faction: The Order", "Chapter 2").
+ * @param {string} title
+ * @returns {boolean}
+ */
+function looksLikeName(title) {
+    const t = String(title || '').trim();
+    if (!t) return false;
+    // Letters (any script) plus spaces, periods, hyphens and apostrophes only.
+    if (!/^[\p{L}][\p{L} .'’\-]*$/u.test(t)) return false;
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length < 1 || words.length > 4) return false;
+
+    let nameWords = 0;
+    for (const raw of words) {
+        const word = raw.replace(/\.$/, ''); // tolerate a trailing period ("Dr.")
+        const bare = word.toLowerCase().replace(/[.'’\-]/g, '');
+        if (NON_NAME_WORDS.has(bare)) return false; // a lore-heading word, not a name
+        if (NAME_PARTICLES.has(bare) || NAME_HONORIFICS.has(bare)) continue;
+        // A name word starts with an uppercase letter and isn't a SHOUTED heading.
+        if (!/^\p{Lu}[\p{L}'’\-]*$/u.test(word)) return false;
+        if (word.length > 1 && word === word.toUpperCase()) return false;
+        nameWords++;
+    }
+    return nameWords >= 1;
+}
+
+async function loadRoster() {
+    if (rosterLoading) return;
+    rosterLoading = true;
+    try {
+        const entries = await getSortedEntries();
+        // Drop disabled entries; keep a stable, readable order by book then title.
+        rosterEntries = (Array.isArray(entries) ? entries : [])
+            .filter(e => e && !e.disable)
+            .sort((a, b) => String(a.world).localeCompare(String(b.world)) || entryTitle(a).localeCompare(entryTitle(b)));
+        rosterLoaded = true;
+        populateRosterBooks();
+        renderRoster();
+    } catch (e) {
+        warn('roster load failed', e);
+        setSceneStatus('Could not read lorebooks for the roster.', true);
+    } finally {
+        rosterLoading = false;
+    }
+}
+
+function populateRosterBooks() {
+    const $select = $('#wf_scene_roster_book');
+    if (!$select.length) return;
+    const previous = $select.val() || ALL_BOOKS;
+    const books = [...new Set(rosterEntries.map(e => String(e.world)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    $select.empty();
+    $('<option></option>').val(ALL_BOOKS).text(`All active lorebooks (${rosterEntries.length})`).appendTo($select);
+    for (const book of books) {
+        const count = rosterEntries.filter(e => e.world === book).length;
+        $('<option></option>').val(book).text(`${book} (${count})`).appendTo($select);
+    }
+    // Restore the previous selection if it still exists.
+    $select.val(books.includes(previous) || previous === ALL_BOOKS ? previous : ALL_BOOKS);
+}
+
+function renderRoster() {
+    const $list = $('#wf_scene_roster_list');
+    const $count = $('#wf_scene_roster_count');
+    if (!$list.length) return;
+    $list.empty();
+
+    if (!rosterLoaded) {
+        $list.append('<div class="wf_scene_empty">Loading lorebooks…</div>');
+        $count.text('');
+        return;
+    }
+
+    const book = $('#wf_scene_roster_book').val() || ALL_BOOKS;
+    const query = String($('#wf_scene_roster_search').val() || '').trim().toLowerCase();
+    const namesOnly = $('#wf_scene_roster_names_only').prop('checked');
+    const present = new Set(getSceneData().present.map(p => String(p.name || '').toLowerCase()));
+
+    let items = book === ALL_BOOKS ? rosterEntries : rosterEntries.filter(e => e.world === book);
+    if (namesOnly) items = items.filter(e => looksLikeName(entryTitle(e)));
+    if (query) {
+        items = items.filter(e =>
+            entryTitle(e).toLowerCase().includes(query) ||
+            String(e.content || '').toLowerCase().includes(query) ||
+            (Array.isArray(e.key) && e.key.some(k => String(k).toLowerCase().includes(query))));
+    }
+
+    const noun = namesOnly ? (items.length === 1 ? 'NPC' : 'NPCs') : `entr${items.length === 1 ? 'y' : 'ies'}`;
+    $count.text(`${items.length} ${noun}`);
+
+    if (!items.length) {
+        let msg;
+        if (!rosterEntries.length) msg = 'No active lorebooks found for this chat/character.';
+        else if (namesOnly) msg = 'No name-like entries found. Untick "Names only" to see all entries.';
+        else msg = 'No entries match your filter.';
+        $list.append(`<div class="wf_scene_empty">${msg}</div>`);
+        return;
+    }
+
+    for (const entry of items) {
+        const title = entryTitle(entry);
+        const inScene = present.has(title.toLowerCase());
+        const $card = $('<div class="wf_scene_npc"></div>');
+        const $head = $('<div class="wf_scene_npc_head"></div>');
+
+        const $title = $('<div class="wf_scene_npc_title"></div>')
+            .attr('title', 'Click to show entry content')
+            .append($('<b></b>').text(title));
+        if (book === ALL_BOOKS) $title.append($('<span class="wf_scene_npc_book"></span>').text(` · ${entry.world}`));
+
+        const $content = $('<div class="wf_scene_npc_content" style="display:none;"></div>')
+            .text(String(entry.content || '').trim() || '(no content)');
+        $title.on('click', () => $content.toggle());
+
+        const $add = $(`<div class="menu_button menu_button_icon ${inScene ? 'wf_scene_npc_in' : ''}" title="${inScene ? 'Already in scene' : 'Add to scene'}"><i class="fa-solid fa-user-plus"></i></div>`)
+            .on('click', () => {
+                const scn = getSceneData();
+                if (scn.present.some(p => p.name.toLowerCase() === title.toLowerCase())) {
+                    setSceneStatus(`"${title}" is already in the scene.`);
+                    return;
+                }
+                scn.present.push({ name: title, role: 'npc' });
+                saveSceneData();
+                setSceneStatus(`Added "${title}" to the scene.`);
+                renderRoster();
+            });
+
+        $head.append($title, $add);
+        $card.append($head, $content);
+        $list.append($card);
+    }
+}
+
+function renderScene() {
+    const scene = getSceneData();
+    $('#wf_scene_location').val(scene.location);
+    $('#wf_scene_inject').prop('checked', scene.inject);
+    renderPresent();
+    renderRoster();
+}
+
+function switchSceneTab(tab) {
+    $('.wf_scene_tab').removeClass('wf_scene_tab_active');
+    $(`.wf_scene_tab[data-tab="${tab}"]`).addClass('wf_scene_tab_active');
+    $('.wf_scene_pane').removeClass('wf_scene_pane_active');
+    $(`#wf_scene_pane_${tab}`).addClass('wf_scene_pane_active');
+    // Lazily read the lorebooks the first time the roster tab is opened.
+    if (tab === 'roster' && !rosterLoaded && !rosterLoading) loadRoster();
+}
+
+function openSceneWindow() {
+    if (!$sceneWindow) return;
+    $sceneWindow.removeClass('wf_scene_hidden');
+    sceneOpen = true;
+    setSceneStatus('');
+    renderScene();
+}
+
+function closeSceneWindow() {
+    if (!$sceneWindow) return;
+    $sceneWindow.addClass('wf_scene_hidden');
+    sceneOpen = false;
+}
+
+function toggleSceneWindow() {
+    sceneOpen ? closeSceneWindow() : openSceneWindow();
+}
+
+async function onSceneRefresh() {
+    setSceneStatus('Scanning recent messages…');
+    $('#wf_scene_refresh').addClass('wf_scene_busy');
+    try {
+        const { present } = await refreshSceneFromChat();
+        renderScene();
+        setSceneStatus(`Updated from chat — ${present} in scene.`);
+    } catch (error) {
+        warn('scene refresh failed', error);
+        setSceneStatus(error?.message || String(error), true);
+    } finally {
+        $('#wf_scene_refresh').removeClass('wf_scene_busy');
+    }
+}
+
+function initSceneTrackerUI() {
+    try {
+        injectSceneStyles();
+    } catch (e) {
+        warn('scene style injection failed (non-fatal)', e);
+    }
+
+    try {
+        $(document.body).append(SCENE_WINDOW_HTML);
+        const $menu = $('#extensionsMenu');
+        if ($menu.length) $menu.append(SCENE_BUTTON_HTML);
+        else $(document.body).append(SCENE_BUTTON_HTML);
+
+        $sceneWindow = $('#wf_scene_window');
+        $sceneStatus = $('#wf_scene_status');
+        if ($sceneWindow.length === 0) {
+            warn('Scene Tracker window not found after append (sanitizer may have stripped it)');
+            return;
+        }
+
+        $('#wf_scene_menu_button').on('click', toggleSceneWindow);
+        $('#wf_scene_close').on('click', closeSceneWindow);
+        $('#wf_scene_refresh').on('click', onSceneRefresh);
+        $('.wf_scene_tab').on('click', function () { switchSceneTab($(this).data('tab')); });
+
+        $('#wf_scene_location').on('input', function () {
+            getSceneData().location = $(this).val();
+            saveSceneData();
+        });
+        $('#wf_scene_inject').on('change', function () {
+            getSceneData().inject = $(this).prop('checked');
+            saveSceneData();
+        });
+
+        const addPresent = () => {
+            const $input = $('#wf_scene_present_name');
+            const name = String($input.val() || '').trim();
+            if (!name) return;
+            const scene = getSceneData();
+            if (!scene.present.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+                scene.present.push({ name, role: 'npc' });
+                saveSceneData();
+                renderPresent();
+            }
+            $input.val('');
+        };
+        $('#wf_scene_present_add').on('click', addPresent);
+        $('#wf_scene_present_name').on('keydown', (e) => { if (e.key === 'Enter') addPresent(); });
+
+        $('#wf_scene_roster_reload').on('click', () => { rosterLoaded = false; loadRoster(); });
+        $('#wf_scene_roster_book').on('change', renderRoster);
+        $('#wf_scene_roster_search').on('input', renderRoster);
+        $('#wf_scene_roster_names_only').on('change', renderRoster);
+
+        // Re-render when the chat changes so the panel reflects the new chat's
+        // record, and invalidate the roster so it re-reads the new lorebook set.
+        eventSource.on(event_types.CHAT_CHANGED, () => {
+            rosterLoaded = false;
+            rosterEntries = [];
+            if (sceneOpen) {
+                renderScene();
+                if ($('.wf_scene_tab[data-tab="roster"]').hasClass('wf_scene_tab_active')) loadRoster();
+            }
+        });
+
+        const s = getSettings();
+        $('#wf_scene_menu_button').toggle(!!s.sceneTrackerEnabled);
+    } catch (e) {
+        warn('Scene Tracker UI wiring failed', e);
+        return;
+    }
+
+    try {
+        const ctx = getContext();
+        if (ctx?.SlashCommandParser && ctx?.SlashCommand) {
+            const { SlashCommandParser, SlashCommand } = ctx;
+            SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+                name: 'scene',
+                callback: () => { toggleSceneWindow(); return ''; },
+                helpString: 'Toggles the World Forge Scene Tracker pane.',
+            }));
+        }
+    } catch (e) {
+        warn('scene slash command registration failed (non-fatal)', e);
+    }
+}
+
 export function init() {
     getSettings();
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
@@ -780,10 +1514,11 @@ export function init() {
     eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.CHAT_CHANGED, migrateOwnedBookToConstant);
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
+    const initUI = () => { initKeyMomentsUI(); initSceneTrackerUI(); };
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initKeyMomentsUI, { once: true });
+        document.addEventListener('DOMContentLoaded', initUI, { once: true });
     } else {
-        initKeyMomentsUI();
+        initUI();
     }
     console.log('[world-forge] runtime extension loaded');
 }

@@ -1480,18 +1480,18 @@ function looksLikeName(title) {
     const t = String(title || '').trim();
     if (!t) return false;
     // Letters (any script) plus spaces, periods, hyphens and apostrophes only.
-    if (!/^[\p{L}][\p{L} .'’\-]*$/u.test(t)) return false;
+    if (!/^[\p{L}][\p{L} .'’-]*$/u.test(t)) return false;
     const words = t.split(/\s+/).filter(Boolean);
     if (words.length < 1 || words.length > 4) return false;
 
     let nameWords = 0;
     for (const raw of words) {
         const word = raw.replace(/\.$/, ''); // tolerate a trailing period ("Dr.")
-        const bare = word.toLowerCase().replace(/[.'’\-]/g, '');
+        const bare = word.toLowerCase().replace(/[.'’-]/g, '');
         if (NON_NAME_WORDS.has(bare)) return false; // a lore-heading word, not a name
         if (NAME_PARTICLES.has(bare) || NAME_HONORIFICS.has(bare)) continue;
         // A name word starts with an uppercase letter and isn't a SHOUTED heading.
-        if (!/^\p{Lu}[\p{L}'’\-]*$/u.test(word)) return false;
+        if (!/^\p{Lu}[\p{L}'’-]*$/u.test(word)) return false;
         if (word.length > 1 && word === word.toUpperCase()) return false;
         nameWords++;
     }

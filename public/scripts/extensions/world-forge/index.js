@@ -1,6 +1,7 @@
-import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders } from '../../../script.js';
+import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders, animation_duration, extension_prompt_types, extension_prompt_roles } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { ConnectionManagerRequestService } from '../shared.js';
+import { getBase64Async, saveBase64AsFile, getFileExtension } from '../../utils.js';
 import {
     loadWorldInfo,
     saveWorldInfo,
@@ -17,6 +18,9 @@ import {
 
 const SETTINGS_KEY = 'world_forge';
 const STYLE_CONTRACT_CLOSE = '</style_contract>';
+// Dedicated extension-prompt key for the Scene Tracker injection. Separate from
+// the native Author's Note ('2_floating_prompt') so the two coexist.
+const SCENE_PROMPT_KEY = 'world_forge_scene';
 
 // ---------------------------------------------------------------------------
 // Key Moments — small-LLM driven recorder that distils recent chat into
@@ -66,6 +70,9 @@ function getSettings() {
     if (typeof s.debug !== 'boolean') s.debug = true;
     if (typeof s.keyMomentsEnabled !== 'boolean') s.keyMomentsEnabled = true;
     if (typeof s.sceneTrackerEnabled !== 'boolean') s.sceneTrackerEnabled = true;
+    // Global map of NPC name (normalised) → uploaded picture path. NPCs live in a
+    // shared lorebook reused across chats, so their portraits persist app-wide.
+    if (!s.npcPictures || typeof s.npcPictures !== 'object') s.npcPictures = {};
     if (typeof s.contextMessages !== 'number' || !Number.isFinite(s.contextMessages)) s.contextMessages = 10;
     s.contextMessages = Math.max(1, Math.min(50, Math.round(s.contextMessages)));
     return s;
@@ -131,7 +138,6 @@ function onChatCompletionPromptReady(eventData) {
     if (!eventData || eventData.dryRun) return;
 
     injectStyleOverride(eventData, settings);
-    injectSceneState(eventData, settings);
 }
 
 function injectStyleOverride(eventData, settings) {
@@ -159,25 +165,41 @@ function injectStyleOverride(eventData, settings) {
 }
 
 /**
- * Splice the per-chat Scene Tracker state into the prompt as a system message
- * near the end (high recency) so the model stays aware of where the scene is,
- * who's present, and each character's condition. Gated by the per-chat
- * "Inject into prompt" toggle.
+ * Push the per-chat Scene Tracker state into the prompt using the same engine as
+ * the native Author's Note — getContext().setExtensionPrompt — under our own key.
+ * This gives Author's-Note-style placement (position / depth / role) and an
+ * insertion interval, and works for both Chat and Text Completion. Called before
+ * each generation (GENERATION_AFTER_COMMANDS) and when the chat/scene changes.
  */
-function injectSceneState(eventData, settings) {
-    if (!getCurrentChatId()) return;
+function updateSceneExtensionPrompt() {
+    const ctx = getContext();
+    const clear = () => ctx.setExtensionPrompt(SCENE_PROMPT_KEY, '', extension_prompt_types.NONE, 0);
+
+    if (!getCurrentChatId()) return clear();
     const scene = getSceneData();
-    if (!scene.inject) return;
+    if (!scene.inject) return clear();
 
     const block = buildSceneBlock(scene);
-    if (!block) return;
+    if (!block) return clear();
 
-    const resolved = substituteParams(block);
-    const chatArr = eventData.chat;
-    if (!Array.isArray(chatArr)) return;
-    const insertAt = Math.max(0, chatArr.length - 1);
-    chatArr.splice(insertAt, 0, { role: 'system', content: resolved });
-    if (settings.debug) console.log('[world-forge] → injected <scene_state> before final message');
+    // Insertion-interval gate, mirroring Author's Note: count user messages and
+    // only inject on the cadence the user picked (1 = always).
+    const interval = scene.injectInterval;
+    let userMsgs = Array.isArray(chat) ? chat.filter(m => m && m.is_user).length : 0;
+    if (interval === 1) userMsgs = 1;
+    if (userMsgs <= 0 || interval <= 0) return clear();
+    const messagesTillInsertion = userMsgs >= interval ? (userMsgs % interval) : (interval - userMsgs);
+    if (messagesTillInsertion !== 0) return clear();
+
+    ctx.setExtensionPrompt(
+        SCENE_PROMPT_KEY,
+        substituteParams(block),
+        scene.injectPosition,
+        scene.injectDepth,
+        false,
+        scene.injectRole,
+    );
+    if (getSettings().debug) console.log('[world-forge] → scene_state set as extension prompt', { position: scene.injectPosition, depth: scene.injectDepth, role: scene.injectRole });
 }
 
 // ------------------------------- helpers -----------------------------------
@@ -464,11 +486,20 @@ const SCENE_META_KEY = 'world_forge_scene';
 const SCENE_EXTRACT_MAX_TOKENS = 1024;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
-/** @typedef {{location: string, present: ScenePerson[], inject: boolean}} SceneData */
+/** @typedef {{location: string, present: ScenePerson[], inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
-    return { location: '', present: [], inject: true };
+    return {
+        location: '',
+        present: [],
+        // Author's-Note-style placement (injected under our own extension-prompt key).
+        inject: true,
+        injectPosition: extension_prompt_types.IN_CHAT, // 1 = in chat @ depth
+        injectDepth: 4,
+        injectRole: extension_prompt_roles.SYSTEM,       // 0 = system
+        injectInterval: 1,                               // every N user messages (1 = always)
+    };
 }
 
 /**
@@ -486,6 +517,12 @@ function getSceneData() {
     if (typeof s.location !== 'string') s.location = '';
     if (!Array.isArray(s.present)) s.present = [];
     if (typeof s.inject !== 'boolean') s.inject = true;
+    if (![extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT].includes(s.injectPosition)) s.injectPosition = extension_prompt_types.IN_CHAT;
+    if (typeof s.injectDepth !== 'number' || !Number.isFinite(s.injectDepth)) s.injectDepth = 4;
+    s.injectDepth = Math.max(0, Math.min(100, Math.round(s.injectDepth)));
+    if (![extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT].includes(s.injectRole)) s.injectRole = extension_prompt_roles.SYSTEM;
+    if (typeof s.injectInterval !== 'number' || !Number.isFinite(s.injectInterval)) s.injectInterval = 1;
+    s.injectInterval = Math.max(0, Math.min(50, Math.round(s.injectInterval)));
     for (const p of s.present) {
         if (p && p.role !== 'user' && p.role !== 'character' && p.role !== 'npc') p.role = 'npc';
     }
@@ -1028,6 +1065,39 @@ const SCENE_WINDOW_HTML = `
             <label data-i18n="Where is the current scene happening?">Where is the current scene happening?</label>
             <textarea id="wf_scene_location" class="text_pole wf_scene_location" rows="4"
                 placeholder="e.g. The rain-soaked back alley behind the Copper Lantern tavern, near midnight."></textarea>
+
+            <div class="wf_scene_inject_cfg">
+                <div class="wf_scene_inject_cfg_head" id="wf_scene_inject_cfg_toggle">
+                    <i class="fa-solid fa-syringe"></i>
+                    <span data-i18n="Injection (Author's Note style)">Injection (Author's Note style)</span>
+                    <i class="fa-solid fa-chevron-down wf_scene_cfg_chevron"></i>
+                </div>
+                <div class="wf_scene_inject_cfg_body" style="display:none;">
+                    <small class="notes" data-i18n="Places the scene block into the prompt like an Author's Note, under its own key (your Author's Note is untouched).">Places the scene block into the prompt like an Author's Note, under its own key (your Author's Note is untouched).</small>
+                    <label data-i18n="Position">Position</label>
+                    <select id="wf_scene_inject_position" class="text_pole">
+                        <option value="1" data-i18n="In chat @ depth">In chat @ depth</option>
+                        <option value="0" data-i18n="After main prompt">After main prompt</option>
+                        <option value="2" data-i18n="Before main prompt">Before main prompt</option>
+                    </select>
+                    <div id="wf_scene_inject_depth_row" class="wf_scene_cfg_row">
+                        <label for="wf_scene_inject_depth" data-i18n="Depth">Depth</label>
+                        <input id="wf_scene_inject_depth" class="text_pole" type="number" min="0" max="100" step="1" />
+                    </div>
+                    <div class="wf_scene_cfg_row">
+                        <label for="wf_scene_inject_role" data-i18n="Role">Role</label>
+                        <select id="wf_scene_inject_role" class="text_pole">
+                            <option value="0" data-i18n="System">System</option>
+                            <option value="1" data-i18n="User">User</option>
+                            <option value="2" data-i18n="Assistant">Assistant</option>
+                        </select>
+                    </div>
+                    <div class="wf_scene_cfg_row">
+                        <label for="wf_scene_inject_interval" data-i18n="Every N messages (1 = always)">Every N messages (1 = always)</label>
+                        <input id="wf_scene_inject_interval" class="text_pole" type="number" min="0" max="50" step="1" />
+                    </div>
+                </div>
+            </div>
         </div>
         <div id="wf_scene_pane_present" class="wf_scene_pane">
             <div id="wf_scene_present_list" class="wf_scene_list"></div>
@@ -1094,6 +1164,16 @@ const SCENE_CSS = `
 .wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
 .wf_scene_pane_active { display: flex; }
 .wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
+.wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
+.wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
+.wf_scene_inject_cfg_head:hover { opacity: 1; }
+.wf_scene_cfg_chevron { margin-left: auto; transition: transform 0.15s ease; }
+.wf_scene_inject_cfg.open .wf_scene_cfg_chevron { transform: rotate(180deg); }
+.wf_scene_inject_cfg_body { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
+.wf_scene_inject_cfg_body label { font-size: 0.85em; opacity: 0.85; }
+.wf_scene_cfg_row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wf_scene_cfg_row label { flex: 1 1 auto; }
+.wf_scene_cfg_row input, .wf_scene_cfg_row select { flex: 0 0 auto; width: 110px; }
 .wf_scene_list { display: flex; flex-direction: column; gap: 8px; }
 .wf_scene_person {
     border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
@@ -1129,6 +1209,18 @@ const SCENE_CSS = `
 .wf_scene_npc_content { margin-top: 6px; font-size: 0.85em; opacity: 0.85; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
 .wf_scene_npc_in { opacity: 0.45; }
 .wf_scene_empty { opacity: 0.55; font-style: italic; padding: 8px 2px; }
+.wf_npc_portrait_wrap { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.wf_npc_portrait {
+    width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%;
+    background-size: cover; background-position: center top; cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    display: flex; align-items: center; justify-content: center; opacity: 0.9;
+}
+.wf_npc_portrait.no_pic { opacity: 0.45; font-size: 0.9em; }
+.wf_npc_portrait:hover { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); }
+.wf_npc_pic_btn { cursor: pointer; opacity: 0.5; font-size: 0.82em; padding: 2px; }
+.wf_npc_pic_btn:hover { opacity: 1; }
+.wf_scene_person .wf_npc_portrait_wrap { margin-top: 8px; }
 @media (max-width: 768px) { #wf_scene_window { width: 100vw; max-width: 100vw; } }`;
 
 function injectSceneStyles() {
@@ -1150,6 +1242,144 @@ function setSceneStatus(text, isError = false) {
 }
 
 const ROLE_CYCLE = { npc: 'character', character: 'user', user: 'npc' };
+
+// ----------------------------- NPC pictures --------------------------------
+// Each NPC can have a portrait the user uploads. The mapping is keyed by the
+// NPC's (normalised) name and stored globally in extension settings, so the
+// same picture follows that NPC across every chat that uses its lorebook.
+
+function npcKey(name) {
+    return String(name || '').trim().toLowerCase();
+}
+
+function getNpcPicture(name) {
+    const key = npcKey(name);
+    if (!key) return '';
+    const path = getSettings().npcPictures[key];
+    return typeof path === 'string' ? path : '';
+}
+
+function setNpcPicture(name, path) {
+    const key = npcKey(name);
+    if (!key) return;
+    getSettings().npcPictures[key] = path;
+    getContext().saveSettingsDebounced();
+}
+
+function removeNpcPicture(name) {
+    const key = npcKey(name);
+    if (!key) return;
+    delete getSettings().npcPictures[key];
+    getContext().saveSettingsDebounced();
+}
+
+/** Safe-for-selector token derived from an NPC name. */
+function npcSlug(name) {
+    return (npcKey(name).replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'npc');
+}
+
+/**
+ * Show an NPC's picture in the same draggable, zoomable popup used when you
+ * click a character's avatar in chat (reuses #zoomed_avatar_template). Clicking
+ * the same NPC again toggles the popup closed.
+ * @param {string} name
+ * @param {string} src
+ */
+function showNpcPicture(name, src) {
+    if (!src) return;
+    const forChar = `wf_npc_${npcSlug(name)}`;
+    const existing = $(`.zoomed_avatar[forChar="${forChar}"]`);
+    if (existing.length) {
+        existing.fadeOut(animation_duration, function () { $(this).remove(); });
+        return;
+    }
+
+    const template = $('#zoomed_avatar_template').html();
+    if (!template) { window.open(src, '_blank'); return; } // graceful fallback
+
+    const $el = $(template);
+    $el.attr('forChar', forChar).attr('id', `zoomFor_${forChar}`).addClass('draggable');
+    $el.find('.drag-grabber').attr('id', `zoomFor_${forChar}header`);
+    // NPC portraits are static images — drop the unused video/toggle controls.
+    $el.find('.zoomed_avatar_video, .zoomed_avatar_toggle').remove();
+
+    $('body').append($el);
+    const $img = $el.find('.zoomed_avatar_img');
+    $img.attr('src', src).attr('data-izoomify-url', src).attr('alt', name);
+    $el.css('display', 'flex').hide().fadeIn(animation_duration);
+
+    try { if ($.fn?.draggable) $el.draggable({ handle: '.drag-grabber' }); } catch { /* drag is optional */ }
+
+    $el.on('click touchend', (e) => {
+        if (e.target.closest('.dragClose')) {
+            $(`.zoomed_avatar[forChar="${forChar}"]`).fadeOut(animation_duration, function () { $(this).remove(); });
+        }
+    });
+}
+
+/**
+ * Open a file picker and upload the chosen image as this NPC's picture. Mirrors
+ * the background-upload flow: data URL → strip prefix → /api/images/upload.
+ * @param {string} name
+ * @param {Function} [onChange] Called after a successful upload to re-render.
+ */
+function uploadNpcPicture(name, onChange) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+            setSceneStatus(`Uploading picture for "${name}"…`);
+            const dataUrl = await getBase64Async(file);
+            const base64 = String(dataUrl).split(',')[1];
+            const ext = getFileExtension(file) || (file.type.split('/')[1] || 'png');
+            const fileName = `${npcSlug(name)}_${Date.now()}`;
+            const path = await saveBase64AsFile(base64, 'world_forge_npcs', fileName, ext);
+            setNpcPicture(name, path);
+            setSceneStatus(`Saved picture for "${name}".`);
+            if (typeof onChange === 'function') onChange();
+        } catch (error) {
+            warn('npc picture upload failed', error);
+            setSceneStatus(error?.message || 'Picture upload failed.', true);
+        }
+    });
+    input.click();
+}
+
+/**
+ * Build the portrait + picture controls for an NPC/character. With a picture:
+ * the portrait shows it and clicking it opens the zoom popup, plus replace/remove
+ * buttons. Without one: a placeholder whose click uploads a picture.
+ * @param {string} name
+ * @param {Function} onChange Re-render callback for the owning list.
+ * @returns {JQuery<HTMLElement>}
+ */
+function buildNpcPortrait(name, onChange) {
+    const src = getNpcPicture(name);
+    const $wrap = $('<div class="wf_npc_portrait_wrap"></div>');
+    const $portrait = $('<div class="wf_npc_portrait"></div>');
+
+    if (src) {
+        $portrait.addClass('has_pic')
+            .css('background-image', `url("${String(src).replace(/"/g, '%22')}")`)
+            .attr('title', 'Show picture')
+            .on('click', () => showNpcPicture(name, src));
+        const $replace = $('<div class="wf_npc_pic_btn" title="Replace picture"><i class="fa-solid fa-camera"></i></div>')
+            .on('click', (e) => { e.stopPropagation(); uploadNpcPicture(name, onChange); });
+        const $remove = $('<div class="wf_npc_pic_btn" title="Remove picture"><i class="fa-solid fa-trash-can"></i></div>')
+            .on('click', (e) => { e.stopPropagation(); removeNpcPicture(name); if (typeof onChange === 'function') onChange(); });
+        $wrap.append($portrait, $replace, $remove);
+    } else {
+        $portrait.addClass('no_pic')
+            .attr('title', 'Add picture')
+            .html('<i class="fa-solid fa-user"></i>')
+            .on('click', () => uploadNpcPicture(name, onChange));
+        $wrap.append($portrait);
+    }
+    return $wrap;
+}
 
 function renderPresent() {
     const scene = getSceneData();
@@ -1183,6 +1413,11 @@ function renderPresent() {
 
         $head.append($role, $name, $remove);
         $card.append($head);
+
+        // Portrait + picture controls for AI characters & NPCs (not the user).
+        if (person.role !== 'user') {
+            $card.append(buildNpcPortrait(person.name, renderPresent));
+        }
 
         // Stats only for non-player (AI) characters & NPCs.
         if (person.role !== 'user') {
@@ -1245,18 +1480,18 @@ function looksLikeName(title) {
     const t = String(title || '').trim();
     if (!t) return false;
     // Letters (any script) plus spaces, periods, hyphens and apostrophes only.
-    if (!/^[\p{L}][\p{L} .'’\-]*$/u.test(t)) return false;
+    if (!/^[\p{L}][\p{L} .'’-]*$/u.test(t)) return false;
     const words = t.split(/\s+/).filter(Boolean);
     if (words.length < 1 || words.length > 4) return false;
 
     let nameWords = 0;
     for (const raw of words) {
         const word = raw.replace(/\.$/, ''); // tolerate a trailing period ("Dr.")
-        const bare = word.toLowerCase().replace(/[.'’\-]/g, '');
+        const bare = word.toLowerCase().replace(/[.'’-]/g, '');
         if (NON_NAME_WORDS.has(bare)) return false; // a lore-heading word, not a name
         if (NAME_PARTICLES.has(bare) || NAME_HONORIFICS.has(bare)) continue;
         // A name word starts with an uppercase letter and isn't a SHOUTED heading.
-        if (!/^\p{Lu}[\p{L}'’\-]*$/u.test(word)) return false;
+        if (!/^\p{Lu}[\p{L}'’-]*$/u.test(word)) return false;
         if (word.length > 1 && word === word.toUpperCase()) return false;
         nameWords++;
     }
@@ -1364,7 +1599,7 @@ function renderRoster() {
                 renderRoster();
             });
 
-        $head.append($title, $add);
+        $head.append(buildNpcPortrait(title, renderRoster), $title, $add);
         $card.append($head, $content);
         $list.append($card);
     }
@@ -1374,6 +1609,12 @@ function renderScene() {
     const scene = getSceneData();
     $('#wf_scene_location').val(scene.location);
     $('#wf_scene_inject').prop('checked', scene.inject);
+    $('#wf_scene_inject_position').val(String(scene.injectPosition));
+    $('#wf_scene_inject_depth').val(scene.injectDepth);
+    $('#wf_scene_inject_role').val(String(scene.injectRole));
+    $('#wf_scene_inject_interval').val(scene.injectInterval);
+    // Depth only matters for the "in chat @ depth" position.
+    $('#wf_scene_inject_depth_row').toggle(scene.injectPosition === extension_prompt_types.IN_CHAT);
     renderPresent();
     renderRoster();
 }
@@ -1452,6 +1693,38 @@ function initSceneTrackerUI() {
         $('#wf_scene_inject').on('change', function () {
             getSceneData().inject = $(this).prop('checked');
             saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+
+        // Author's-Note-style placement controls.
+        $('#wf_scene_inject_cfg_toggle').on('click', function () {
+            const $cfg = $(this).closest('.wf_scene_inject_cfg');
+            const $body = $cfg.find('.wf_scene_inject_cfg_body');
+            const show = $body.is(':hidden');
+            $body.toggle(show);
+            $cfg.toggleClass('open', show);
+        });
+        $('#wf_scene_inject_position').on('change', function () {
+            const scene = getSceneData();
+            scene.injectPosition = Number($(this).val());
+            $('#wf_scene_inject_depth_row').toggle(scene.injectPosition === extension_prompt_types.IN_CHAT);
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_inject_depth').on('input', function () {
+            getSceneData().injectDepth = Math.max(0, Math.min(100, Number($(this).val()) || 0));
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_inject_role').on('change', function () {
+            getSceneData().injectRole = Number($(this).val());
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_inject_interval').on('input', function () {
+            getSceneData().injectInterval = Math.max(0, Math.min(50, Number($(this).val()) || 0));
+            saveSceneData();
+            updateSceneExtensionPrompt();
         });
 
         const addPresent = () => {
@@ -1513,6 +1786,10 @@ export function init() {
     eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.CHAT_CHANGED, migrateOwnedBookToConstant);
+    // Scene Tracker injection (Author's-Note-style placement under our own key):
+    // recompute before each generation, and clear/refresh when the chat changes.
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateSceneExtensionPrompt);
+    eventSource.on(event_types.CHAT_CHANGED, updateSceneExtensionPrompt);
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
     const initUI = () => { initKeyMomentsUI(); initSceneTrackerUI(); };
     if (document.readyState === 'loading') {

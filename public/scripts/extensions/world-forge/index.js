@@ -11,6 +11,7 @@ import {
     reloadEditor,
     world_names,
     world_info_llm_filter_profile,
+    getSortedEntries,
     METADATA_KEY,
 } from '../../world-info.js';
 
@@ -463,12 +464,11 @@ const SCENE_META_KEY = 'world_forge_scene';
 const SCENE_EXTRACT_MAX_TOKENS = 1024;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
-/** @typedef {{name: string, notes?: string}} RosterEntry */
-/** @typedef {{location: string, present: ScenePerson[], roster: RosterEntry[], inject: boolean}} SceneData */
+/** @typedef {{location: string, present: ScenePerson[], inject: boolean}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
-    return { location: '', present: [], roster: [], inject: true };
+    return { location: '', present: [], inject: true };
 }
 
 /**
@@ -485,7 +485,6 @@ function getSceneData() {
     }
     if (typeof s.location !== 'string') s.location = '';
     if (!Array.isArray(s.present)) s.present = [];
-    if (!Array.isArray(s.roster)) s.roster = [];
     if (typeof s.inject !== 'boolean') s.inject = true;
     for (const p of s.present) {
         if (p && p.role !== 'user' && p.role !== 'character' && p.role !== 'npc') p.role = 'npc';
@@ -1038,12 +1037,14 @@ const SCENE_WINDOW_HTML = `
             </div>
         </div>
         <div id="wf_scene_pane_roster" class="wf_scene_pane">
-            <small class="notes" data-i18n="A reusable pool of NPCs for this chat. Add them to the scene with one click.">A reusable pool of NPCs for this chat. Add them to the scene with one click.</small>
-            <div id="wf_scene_roster_list" class="wf_scene_list"></div>
-            <div class="wf_scene_add_row">
-                <input id="wf_scene_roster_name" class="text_pole" type="text" placeholder="New NPC name…" />
-                <div id="wf_scene_roster_add" class="menu_button" title="Add to roster"><i class="fa-solid fa-plus"></i></div>
+            <small class="notes" data-i18n="NPCs available in this roleplay's active lorebooks. Click + to add one to the scene.">NPCs available in this roleplay's active lorebooks. Click + to add one to the scene.</small>
+            <div class="wf_scene_roster_controls">
+                <select id="wf_scene_roster_book" class="text_pole"></select>
+                <div id="wf_scene_roster_reload" class="menu_button menu_button_icon" title="Reload from lorebooks"><i class="fa-solid fa-rotate"></i></div>
             </div>
+            <input id="wf_scene_roster_search" class="text_pole" type="text" placeholder="Filter by name or content…" />
+            <div id="wf_scene_roster_count" class="wf_scene_roster_count"></div>
+            <div id="wf_scene_roster_list" class="wf_scene_list"></div>
         </div>
     </div>
 </div>`;
@@ -1108,8 +1109,19 @@ const SCENE_CSS = `
 .wf_scene_remove:hover { opacity: 1; color: var(--fullred, #e06666); }
 .wf_scene_add_row { display: flex; gap: 6px; align-items: center; }
 .wf_scene_add_row .text_pole { flex: 1 1 auto; min-width: 0; }
-.wf_scene_roster_entry { display: flex; align-items: center; gap: 6px; }
-.wf_scene_roster_entry .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_scene_roster_controls { display: flex; gap: 6px; align-items: center; }
+.wf_scene_roster_controls .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_scene_roster_count { font-size: 0.78em; opacity: 0.6; }
+.wf_scene_npc {
+    border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
+    padding: 6px 8px; background: rgba(255, 255, 255, 0.03);
+}
+.wf_scene_npc_head { display: flex; align-items: center; gap: 6px; }
+.wf_scene_npc_title { flex: 1 1 auto; min-width: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf_scene_npc_title b { font-weight: 600; }
+.wf_scene_npc_book { font-size: 0.72em; opacity: 0.55; }
+.wf_scene_npc_content { margin-top: 6px; font-size: 0.85em; opacity: 0.85; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
+.wf_scene_npc_in { opacity: 0.45; }
 .wf_scene_empty { opacity: 0.55; font-style: italic; padding: 8px 2px; }
 @media (max-width: 768px) { #wf_scene_window { width: 100vw; max-width: 100vw; } }`;
 
@@ -1187,37 +1199,120 @@ function renderPresent() {
     });
 }
 
+// The NPC Roster reads the roleplay's active lorebooks (character book, chat
+// book, global, persona) and presents their entries as a browsable directory of
+// available NPCs — each can be dropped into the scene with one click.
+const ALL_BOOKS = '__all__';
+let rosterEntries = [];
+let rosterLoaded = false;
+let rosterLoading = false;
+
+/** Title for a lorebook entry: its memo/comment, else its first keyword. */
+function entryTitle(entry) {
+    const comment = String(entry?.comment || '').trim();
+    if (comment) return comment;
+    const firstKey = Array.isArray(entry?.key) ? String(entry.key[0] || '').trim() : '';
+    return firstKey || '(untitled entry)';
+}
+
+async function loadRoster() {
+    if (rosterLoading) return;
+    rosterLoading = true;
+    try {
+        const entries = await getSortedEntries();
+        // Drop disabled entries; keep a stable, readable order by book then title.
+        rosterEntries = (Array.isArray(entries) ? entries : [])
+            .filter(e => e && !e.disable)
+            .sort((a, b) => String(a.world).localeCompare(String(b.world)) || entryTitle(a).localeCompare(entryTitle(b)));
+        rosterLoaded = true;
+        populateRosterBooks();
+        renderRoster();
+    } catch (e) {
+        warn('roster load failed', e);
+        setSceneStatus('Could not read lorebooks for the roster.', true);
+    } finally {
+        rosterLoading = false;
+    }
+}
+
+function populateRosterBooks() {
+    const $select = $('#wf_scene_roster_book');
+    if (!$select.length) return;
+    const previous = $select.val() || ALL_BOOKS;
+    const books = [...new Set(rosterEntries.map(e => String(e.world)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    $select.empty();
+    $('<option></option>').val(ALL_BOOKS).text(`All active lorebooks (${rosterEntries.length})`).appendTo($select);
+    for (const book of books) {
+        const count = rosterEntries.filter(e => e.world === book).length;
+        $('<option></option>').val(book).text(`${book} (${count})`).appendTo($select);
+    }
+    // Restore the previous selection if it still exists.
+    $select.val(books.includes(previous) || previous === ALL_BOOKS ? previous : ALL_BOOKS);
+}
+
 function renderRoster() {
-    const scene = getSceneData();
     const $list = $('#wf_scene_roster_list');
+    const $count = $('#wf_scene_roster_count');
     if (!$list.length) return;
     $list.empty();
 
-    if (!scene.roster.length) {
-        $list.append('<div class="wf_scene_empty">No NPCs in the roster yet.</div>');
+    if (!rosterLoaded) {
+        $list.append('<div class="wf_scene_empty">Loading lorebooks…</div>');
+        $count.text('');
         return;
     }
 
-    scene.roster.forEach((entry, idx) => {
-        const $row = $('<div class="wf_scene_roster_entry"></div>');
-        const $name = $('<input class="text_pole" type="text">').val(entry.name)
-            .on('input', function () { entry.name = $(this).val(); saveSceneData(); });
-        const $addToScene = $('<div class="menu_button menu_button_icon" title="Add to scene"><i class="fa-solid fa-user-plus"></i></div>')
+    const book = $('#wf_scene_roster_book').val() || ALL_BOOKS;
+    const query = String($('#wf_scene_roster_search').val() || '').trim().toLowerCase();
+    const present = new Set(getSceneData().present.map(p => String(p.name || '').toLowerCase()));
+
+    let items = book === ALL_BOOKS ? rosterEntries : rosterEntries.filter(e => e.world === book);
+    if (query) {
+        items = items.filter(e =>
+            entryTitle(e).toLowerCase().includes(query) ||
+            String(e.content || '').toLowerCase().includes(query) ||
+            (Array.isArray(e.key) && e.key.some(k => String(k).toLowerCase().includes(query))));
+    }
+
+    $count.text(`${items.length} entr${items.length === 1 ? 'y' : 'ies'}`);
+
+    if (!items.length) {
+        $list.append(`<div class="wf_scene_empty">${rosterEntries.length ? 'No entries match your filter.' : 'No active lorebooks found for this chat/character.'}</div>`);
+        return;
+    }
+
+    for (const entry of items) {
+        const title = entryTitle(entry);
+        const inScene = present.has(title.toLowerCase());
+        const $card = $('<div class="wf_scene_npc"></div>');
+        const $head = $('<div class="wf_scene_npc_head"></div>');
+
+        const $title = $('<div class="wf_scene_npc_title"></div>')
+            .attr('title', 'Click to show entry content')
+            .append($('<b></b>').text(title));
+        if (book === ALL_BOOKS) $title.append($('<span class="wf_scene_npc_book"></span>').text(` · ${entry.world}`));
+
+        const $content = $('<div class="wf_scene_npc_content" style="display:none;"></div>')
+            .text(String(entry.content || '').trim() || '(no content)');
+        $title.on('click', () => $content.toggle());
+
+        const $add = $(`<div class="menu_button menu_button_icon ${inScene ? 'wf_scene_npc_in' : ''}" title="${inScene ? 'Already in scene' : 'Add to scene'}"><i class="fa-solid fa-user-plus"></i></div>`)
             .on('click', () => {
-                const name = String(entry.name || '').trim();
-                if (!name) return;
                 const scn = getSceneData();
-                if (!scn.present.some(p => p.name.toLowerCase() === name.toLowerCase())) {
-                    scn.present.push({ name, role: 'npc' });
-                    saveSceneData();
-                    setSceneStatus(`Added "${name}" to the scene.`);
+                if (scn.present.some(p => p.name.toLowerCase() === title.toLowerCase())) {
+                    setSceneStatus(`"${title}" is already in the scene.`);
+                    return;
                 }
+                scn.present.push({ name: title, role: 'npc' });
+                saveSceneData();
+                setSceneStatus(`Added "${title}" to the scene.`);
+                renderRoster();
             });
-        const $remove = $('<div class="wf_scene_remove" title="Remove from roster"><i class="fa-solid fa-trash-can"></i></div>')
-            .on('click', () => { scene.roster.splice(idx, 1); saveSceneData(); renderRoster(); });
-        $row.append($name, $addToScene, $remove);
-        $list.append($row);
-    });
+
+        $head.append($title, $add);
+        $card.append($head, $content);
+        $list.append($card);
+    }
 }
 
 function renderScene() {
@@ -1233,6 +1328,8 @@ function switchSceneTab(tab) {
     $(`.wf_scene_tab[data-tab="${tab}"]`).addClass('wf_scene_tab_active');
     $('.wf_scene_pane').removeClass('wf_scene_pane_active');
     $(`#wf_scene_pane_${tab}`).addClass('wf_scene_pane_active');
+    // Lazily read the lorebooks the first time the roster tab is opened.
+    if (tab === 'roster' && !rosterLoaded && !rosterLoading) loadRoster();
 }
 
 function openSceneWindow() {
@@ -1317,23 +1414,20 @@ function initSceneTrackerUI() {
         $('#wf_scene_present_add').on('click', addPresent);
         $('#wf_scene_present_name').on('keydown', (e) => { if (e.key === 'Enter') addPresent(); });
 
-        const addRoster = () => {
-            const $input = $('#wf_scene_roster_name');
-            const name = String($input.val() || '').trim();
-            if (!name) return;
-            const scene = getSceneData();
-            if (!scene.roster.some(r => r.name.toLowerCase() === name.toLowerCase())) {
-                scene.roster.push({ name });
-                saveSceneData();
-                renderRoster();
-            }
-            $input.val('');
-        };
-        $('#wf_scene_roster_add').on('click', addRoster);
-        $('#wf_scene_roster_name').on('keydown', (e) => { if (e.key === 'Enter') addRoster(); });
+        $('#wf_scene_roster_reload').on('click', () => { rosterLoaded = false; loadRoster(); });
+        $('#wf_scene_roster_book').on('change', renderRoster);
+        $('#wf_scene_roster_search').on('input', renderRoster);
 
-        // Re-render when the chat changes so the panel reflects the new chat's record.
-        eventSource.on(event_types.CHAT_CHANGED, () => { if (sceneOpen) renderScene(); });
+        // Re-render when the chat changes so the panel reflects the new chat's
+        // record, and invalidate the roster so it re-reads the new lorebook set.
+        eventSource.on(event_types.CHAT_CHANGED, () => {
+            rosterLoaded = false;
+            rosterEntries = [];
+            if (sceneOpen) {
+                renderScene();
+                if ($('.wf_scene_tab[data-tab="roster"]').hasClass('wf_scene_tab_active')) loadRoster();
+            }
+        });
 
         const s = getSettings();
         $('#wf_scene_menu_button').toggle(!!s.sceneTrackerEnabled);

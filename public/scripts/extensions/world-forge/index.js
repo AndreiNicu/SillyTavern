@@ -1,4 +1,4 @@
-import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders, animation_duration } from '../../../script.js';
+import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders, animation_duration, extension_prompt_types, extension_prompt_roles } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { ConnectionManagerRequestService } from '../shared.js';
 import { getBase64Async, saveBase64AsFile, getFileExtension } from '../../utils.js';
@@ -18,6 +18,9 @@ import {
 
 const SETTINGS_KEY = 'world_forge';
 const STYLE_CONTRACT_CLOSE = '</style_contract>';
+// Dedicated extension-prompt key for the Scene Tracker injection. Separate from
+// the native Author's Note ('2_floating_prompt') so the two coexist.
+const SCENE_PROMPT_KEY = 'world_forge_scene';
 
 // ---------------------------------------------------------------------------
 // Key Moments — small-LLM driven recorder that distils recent chat into
@@ -135,7 +138,6 @@ function onChatCompletionPromptReady(eventData) {
     if (!eventData || eventData.dryRun) return;
 
     injectStyleOverride(eventData, settings);
-    injectSceneState(eventData, settings);
 }
 
 function injectStyleOverride(eventData, settings) {
@@ -163,25 +165,41 @@ function injectStyleOverride(eventData, settings) {
 }
 
 /**
- * Splice the per-chat Scene Tracker state into the prompt as a system message
- * near the end (high recency) so the model stays aware of where the scene is,
- * who's present, and each character's condition. Gated by the per-chat
- * "Inject into prompt" toggle.
+ * Push the per-chat Scene Tracker state into the prompt using the same engine as
+ * the native Author's Note — getContext().setExtensionPrompt — under our own key.
+ * This gives Author's-Note-style placement (position / depth / role) and an
+ * insertion interval, and works for both Chat and Text Completion. Called before
+ * each generation (GENERATION_AFTER_COMMANDS) and when the chat/scene changes.
  */
-function injectSceneState(eventData, settings) {
-    if (!getCurrentChatId()) return;
+function updateSceneExtensionPrompt() {
+    const ctx = getContext();
+    const clear = () => ctx.setExtensionPrompt(SCENE_PROMPT_KEY, '', extension_prompt_types.NONE, 0);
+
+    if (!getCurrentChatId()) return clear();
     const scene = getSceneData();
-    if (!scene.inject) return;
+    if (!scene.inject) return clear();
 
     const block = buildSceneBlock(scene);
-    if (!block) return;
+    if (!block) return clear();
 
-    const resolved = substituteParams(block);
-    const chatArr = eventData.chat;
-    if (!Array.isArray(chatArr)) return;
-    const insertAt = Math.max(0, chatArr.length - 1);
-    chatArr.splice(insertAt, 0, { role: 'system', content: resolved });
-    if (settings.debug) console.log('[world-forge] → injected <scene_state> before final message');
+    // Insertion-interval gate, mirroring Author's Note: count user messages and
+    // only inject on the cadence the user picked (1 = always).
+    const interval = scene.injectInterval;
+    let userMsgs = Array.isArray(chat) ? chat.filter(m => m && m.is_user).length : 0;
+    if (interval === 1) userMsgs = 1;
+    if (userMsgs <= 0 || interval <= 0) return clear();
+    const messagesTillInsertion = userMsgs >= interval ? (userMsgs % interval) : (interval - userMsgs);
+    if (messagesTillInsertion !== 0) return clear();
+
+    ctx.setExtensionPrompt(
+        SCENE_PROMPT_KEY,
+        substituteParams(block),
+        scene.injectPosition,
+        scene.injectDepth,
+        false,
+        scene.injectRole,
+    );
+    if (getSettings().debug) console.log('[world-forge] → scene_state set as extension prompt', { position: scene.injectPosition, depth: scene.injectDepth, role: scene.injectRole });
 }
 
 // ------------------------------- helpers -----------------------------------
@@ -468,11 +486,20 @@ const SCENE_META_KEY = 'world_forge_scene';
 const SCENE_EXTRACT_MAX_TOKENS = 1024;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
-/** @typedef {{location: string, present: ScenePerson[], inject: boolean}} SceneData */
+/** @typedef {{location: string, present: ScenePerson[], inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
-    return { location: '', present: [], inject: true };
+    return {
+        location: '',
+        present: [],
+        // Author's-Note-style placement (injected under our own extension-prompt key).
+        inject: true,
+        injectPosition: extension_prompt_types.IN_CHAT, // 1 = in chat @ depth
+        injectDepth: 4,
+        injectRole: extension_prompt_roles.SYSTEM,       // 0 = system
+        injectInterval: 1,                               // every N user messages (1 = always)
+    };
 }
 
 /**
@@ -490,6 +517,12 @@ function getSceneData() {
     if (typeof s.location !== 'string') s.location = '';
     if (!Array.isArray(s.present)) s.present = [];
     if (typeof s.inject !== 'boolean') s.inject = true;
+    if (![extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT].includes(s.injectPosition)) s.injectPosition = extension_prompt_types.IN_CHAT;
+    if (typeof s.injectDepth !== 'number' || !Number.isFinite(s.injectDepth)) s.injectDepth = 4;
+    s.injectDepth = Math.max(0, Math.min(100, Math.round(s.injectDepth)));
+    if (![extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT].includes(s.injectRole)) s.injectRole = extension_prompt_roles.SYSTEM;
+    if (typeof s.injectInterval !== 'number' || !Number.isFinite(s.injectInterval)) s.injectInterval = 1;
+    s.injectInterval = Math.max(0, Math.min(50, Math.round(s.injectInterval)));
     for (const p of s.present) {
         if (p && p.role !== 'user' && p.role !== 'character' && p.role !== 'npc') p.role = 'npc';
     }
@@ -1032,6 +1065,39 @@ const SCENE_WINDOW_HTML = `
             <label data-i18n="Where is the current scene happening?">Where is the current scene happening?</label>
             <textarea id="wf_scene_location" class="text_pole wf_scene_location" rows="4"
                 placeholder="e.g. The rain-soaked back alley behind the Copper Lantern tavern, near midnight."></textarea>
+
+            <div class="wf_scene_inject_cfg">
+                <div class="wf_scene_inject_cfg_head" id="wf_scene_inject_cfg_toggle">
+                    <i class="fa-solid fa-syringe"></i>
+                    <span data-i18n="Injection (Author's Note style)">Injection (Author's Note style)</span>
+                    <i class="fa-solid fa-chevron-down wf_scene_cfg_chevron"></i>
+                </div>
+                <div class="wf_scene_inject_cfg_body" style="display:none;">
+                    <small class="notes" data-i18n="Places the scene block into the prompt like an Author's Note, under its own key (your Author's Note is untouched).">Places the scene block into the prompt like an Author's Note, under its own key (your Author's Note is untouched).</small>
+                    <label data-i18n="Position">Position</label>
+                    <select id="wf_scene_inject_position" class="text_pole">
+                        <option value="1" data-i18n="In chat @ depth">In chat @ depth</option>
+                        <option value="0" data-i18n="After main prompt">After main prompt</option>
+                        <option value="2" data-i18n="Before main prompt">Before main prompt</option>
+                    </select>
+                    <div id="wf_scene_inject_depth_row" class="wf_scene_cfg_row">
+                        <label for="wf_scene_inject_depth" data-i18n="Depth">Depth</label>
+                        <input id="wf_scene_inject_depth" class="text_pole" type="number" min="0" max="100" step="1" />
+                    </div>
+                    <div class="wf_scene_cfg_row">
+                        <label for="wf_scene_inject_role" data-i18n="Role">Role</label>
+                        <select id="wf_scene_inject_role" class="text_pole">
+                            <option value="0" data-i18n="System">System</option>
+                            <option value="1" data-i18n="User">User</option>
+                            <option value="2" data-i18n="Assistant">Assistant</option>
+                        </select>
+                    </div>
+                    <div class="wf_scene_cfg_row">
+                        <label for="wf_scene_inject_interval" data-i18n="Every N messages (1 = always)">Every N messages (1 = always)</label>
+                        <input id="wf_scene_inject_interval" class="text_pole" type="number" min="0" max="50" step="1" />
+                    </div>
+                </div>
+            </div>
         </div>
         <div id="wf_scene_pane_present" class="wf_scene_pane">
             <div id="wf_scene_present_list" class="wf_scene_list"></div>
@@ -1098,6 +1164,16 @@ const SCENE_CSS = `
 .wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
 .wf_scene_pane_active { display: flex; }
 .wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
+.wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
+.wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
+.wf_scene_inject_cfg_head:hover { opacity: 1; }
+.wf_scene_cfg_chevron { margin-left: auto; transition: transform 0.15s ease; }
+.wf_scene_inject_cfg.open .wf_scene_cfg_chevron { transform: rotate(180deg); }
+.wf_scene_inject_cfg_body { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
+.wf_scene_inject_cfg_body label { font-size: 0.85em; opacity: 0.85; }
+.wf_scene_cfg_row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wf_scene_cfg_row label { flex: 1 1 auto; }
+.wf_scene_cfg_row input, .wf_scene_cfg_row select { flex: 0 0 auto; width: 110px; }
 .wf_scene_list { display: flex; flex-direction: column; gap: 8px; }
 .wf_scene_person {
     border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
@@ -1533,6 +1609,12 @@ function renderScene() {
     const scene = getSceneData();
     $('#wf_scene_location').val(scene.location);
     $('#wf_scene_inject').prop('checked', scene.inject);
+    $('#wf_scene_inject_position').val(String(scene.injectPosition));
+    $('#wf_scene_inject_depth').val(scene.injectDepth);
+    $('#wf_scene_inject_role').val(String(scene.injectRole));
+    $('#wf_scene_inject_interval').val(scene.injectInterval);
+    // Depth only matters for the "in chat @ depth" position.
+    $('#wf_scene_inject_depth_row').toggle(scene.injectPosition === extension_prompt_types.IN_CHAT);
     renderPresent();
     renderRoster();
 }
@@ -1611,6 +1693,38 @@ function initSceneTrackerUI() {
         $('#wf_scene_inject').on('change', function () {
             getSceneData().inject = $(this).prop('checked');
             saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+
+        // Author's-Note-style placement controls.
+        $('#wf_scene_inject_cfg_toggle').on('click', function () {
+            const $cfg = $(this).closest('.wf_scene_inject_cfg');
+            const $body = $cfg.find('.wf_scene_inject_cfg_body');
+            const show = $body.is(':hidden');
+            $body.toggle(show);
+            $cfg.toggleClass('open', show);
+        });
+        $('#wf_scene_inject_position').on('change', function () {
+            const scene = getSceneData();
+            scene.injectPosition = Number($(this).val());
+            $('#wf_scene_inject_depth_row').toggle(scene.injectPosition === extension_prompt_types.IN_CHAT);
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_inject_depth').on('input', function () {
+            getSceneData().injectDepth = Math.max(0, Math.min(100, Number($(this).val()) || 0));
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_inject_role').on('change', function () {
+            getSceneData().injectRole = Number($(this).val());
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_inject_interval').on('input', function () {
+            getSceneData().injectInterval = Math.max(0, Math.min(50, Number($(this).val()) || 0));
+            saveSceneData();
+            updateSceneExtensionPrompt();
         });
 
         const addPresent = () => {
@@ -1672,6 +1786,10 @@ export function init() {
     eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
     eventSource.on(event_types.CHAT_CHANGED, migrateOwnedBookToConstant);
+    // Scene Tracker injection (Author's-Note-style placement under our own key):
+    // recompute before each generation, and clear/refresh when the chat changes.
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateSceneExtensionPrompt);
+    eventSource.on(event_types.CHAT_CHANGED, updateSceneExtensionPrompt);
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
     const initUI = () => { initKeyMomentsUI(); initSceneTrackerUI(); };
     if (document.readyState === 'loading') {

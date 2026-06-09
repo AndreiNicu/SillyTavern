@@ -1043,6 +1043,10 @@ const SCENE_WINDOW_HTML = `
                 <div id="wf_scene_roster_reload" class="menu_button menu_button_icon" title="Reload from lorebooks"><i class="fa-solid fa-rotate"></i></div>
             </div>
             <input id="wf_scene_roster_search" class="text_pole" type="text" placeholder="Filter by name or content…" />
+            <label class="wf_scene_names_only" title="Show only entries whose title looks like a personal name">
+                <input id="wf_scene_roster_names_only" type="checkbox" checked />
+                <span data-i18n="Names only (NPCs)">Names only (NPCs)</span>
+            </label>
             <div id="wf_scene_roster_count" class="wf_scene_roster_count"></div>
             <div id="wf_scene_roster_list" class="wf_scene_list"></div>
         </div>
@@ -1111,6 +1115,8 @@ const SCENE_CSS = `
 .wf_scene_add_row .text_pole { flex: 1 1 auto; min-width: 0; }
 .wf_scene_roster_controls { display: flex; gap: 6px; align-items: center; }
 .wf_scene_roster_controls .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_scene_names_only { display: flex; align-items: center; gap: 6px; font-size: 0.82em; opacity: 0.85; cursor: pointer; }
+.wf_scene_names_only input { margin: 0; }
 .wf_scene_roster_count { font-size: 0.78em; opacity: 0.6; }
 .wf_scene_npc {
     border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
@@ -1215,6 +1221,48 @@ function entryTitle(entry) {
     return firstKey || '(untitled entry)';
 }
 
+// Lowercase tokens that are part of a name but not themselves capitalised name
+// words — name particles ("von Trapp", "de la Cruz") and honorifics ("Dr.",
+// "Sir"). They don't count toward, nor disqualify, a title looking like a name.
+const NAME_PARTICLES = new Set(['von', 'van', 'de', 'del', 'della', 'di', 'da', 'la', 'le', 'du', 'of', 'the', 'bin', 'al', 'mac', 'mc', 'san', 'st', 'dos', 'das', 'ten', 'ter']);
+const NAME_HONORIFICS = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'sir', 'lady', 'lord', 'capt', 'captain', 'prof', 'professor', 'father', 'sister', 'brother', 'king', 'queen', 'prince', 'princess', 'master', 'mistress', 'madam', 'madame', 'count', 'countess', 'baron', 'baroness', 'duke', 'duchess', 'general', 'sgt', 'sergeant', 'col', 'colonel', 'major', 'lt', 'lieutenant']);
+
+// Abstract nouns that mark a title as non-NPC lore even when capitalised like a
+// name ("World Rules", "Magic System Overview"). Deliberately limited to words
+// that are very unlikely to be a person's name.
+const NON_NAME_WORDS = new Set(['rules', 'system', 'systems', 'overview', 'lore', 'timeline', 'history', 'map', 'faction', 'factions', 'guide', 'summary', 'glossary', 'index', 'mechanics', 'setting', 'settings', 'location', 'locations', 'inventory', 'quest', 'quests', 'background', 'intro', 'introduction', 'notes', 'readme', 'template', 'prompt', 'instructions', 'worldbuilding', 'world', 'rule', 'info', 'information', 'list']);
+
+/**
+ * First-release heuristic for "this title looks like a personal name". Structural
+ * (not dictionary-based) so it works for invented/fantasy names too: 1–4 words,
+ * letters plus name punctuation only, each significant word Capitalised and not a
+ * SHOUTED heading. Rejects entries with digits, symbols, or colons (typically
+ * non-NPC lore like "World Rules", "Faction: The Order", "Chapter 2").
+ * @param {string} title
+ * @returns {boolean}
+ */
+function looksLikeName(title) {
+    const t = String(title || '').trim();
+    if (!t) return false;
+    // Letters (any script) plus spaces, periods, hyphens and apostrophes only.
+    if (!/^[\p{L}][\p{L} .'’\-]*$/u.test(t)) return false;
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length < 1 || words.length > 4) return false;
+
+    let nameWords = 0;
+    for (const raw of words) {
+        const word = raw.replace(/\.$/, ''); // tolerate a trailing period ("Dr.")
+        const bare = word.toLowerCase().replace(/[.'’\-]/g, '');
+        if (NON_NAME_WORDS.has(bare)) return false; // a lore-heading word, not a name
+        if (NAME_PARTICLES.has(bare) || NAME_HONORIFICS.has(bare)) continue;
+        // A name word starts with an uppercase letter and isn't a SHOUTED heading.
+        if (!/^\p{Lu}[\p{L}'’\-]*$/u.test(word)) return false;
+        if (word.length > 1 && word === word.toUpperCase()) return false;
+        nameWords++;
+    }
+    return nameWords >= 1;
+}
+
 async function loadRoster() {
     if (rosterLoading) return;
     rosterLoading = true;
@@ -1264,9 +1312,11 @@ function renderRoster() {
 
     const book = $('#wf_scene_roster_book').val() || ALL_BOOKS;
     const query = String($('#wf_scene_roster_search').val() || '').trim().toLowerCase();
+    const namesOnly = $('#wf_scene_roster_names_only').prop('checked');
     const present = new Set(getSceneData().present.map(p => String(p.name || '').toLowerCase()));
 
     let items = book === ALL_BOOKS ? rosterEntries : rosterEntries.filter(e => e.world === book);
+    if (namesOnly) items = items.filter(e => looksLikeName(entryTitle(e)));
     if (query) {
         items = items.filter(e =>
             entryTitle(e).toLowerCase().includes(query) ||
@@ -1274,10 +1324,15 @@ function renderRoster() {
             (Array.isArray(e.key) && e.key.some(k => String(k).toLowerCase().includes(query))));
     }
 
-    $count.text(`${items.length} entr${items.length === 1 ? 'y' : 'ies'}`);
+    const noun = namesOnly ? (items.length === 1 ? 'NPC' : 'NPCs') : `entr${items.length === 1 ? 'y' : 'ies'}`;
+    $count.text(`${items.length} ${noun}`);
 
     if (!items.length) {
-        $list.append(`<div class="wf_scene_empty">${rosterEntries.length ? 'No entries match your filter.' : 'No active lorebooks found for this chat/character.'}</div>`);
+        let msg;
+        if (!rosterEntries.length) msg = 'No active lorebooks found for this chat/character.';
+        else if (namesOnly) msg = 'No name-like entries found. Untick "Names only" to see all entries.';
+        else msg = 'No entries match your filter.';
+        $list.append(`<div class="wf_scene_empty">${msg}</div>`);
         return;
     }
 
@@ -1417,6 +1472,7 @@ function initSceneTrackerUI() {
         $('#wf_scene_roster_reload').on('click', () => { rosterLoaded = false; loadRoster(); });
         $('#wf_scene_roster_book').on('change', renderRoster);
         $('#wf_scene_roster_search').on('input', renderRoster);
+        $('#wf_scene_roster_names_only').on('change', renderRoster);
 
         // Re-render when the chat changes so the panel reflects the new chat's
         // record, and invalidate the roster so it re-reads the new lorebook set.

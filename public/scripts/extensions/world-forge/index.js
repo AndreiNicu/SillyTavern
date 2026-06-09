@@ -1,6 +1,7 @@
-import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders } from '../../../script.js';
+import { eventSource, event_types, this_chid, characters, substituteParams, chat, name1, getCurrentChatId, chat_metadata, saveMetadata, getRequestHeaders, animation_duration } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { ConnectionManagerRequestService } from '../shared.js';
+import { getBase64Async, saveBase64AsFile, getFileExtension } from '../../utils.js';
 import {
     loadWorldInfo,
     saveWorldInfo,
@@ -66,6 +67,9 @@ function getSettings() {
     if (typeof s.debug !== 'boolean') s.debug = true;
     if (typeof s.keyMomentsEnabled !== 'boolean') s.keyMomentsEnabled = true;
     if (typeof s.sceneTrackerEnabled !== 'boolean') s.sceneTrackerEnabled = true;
+    // Global map of NPC name (normalised) → uploaded picture path. NPCs live in a
+    // shared lorebook reused across chats, so their portraits persist app-wide.
+    if (!s.npcPictures || typeof s.npcPictures !== 'object') s.npcPictures = {};
     if (typeof s.contextMessages !== 'number' || !Number.isFinite(s.contextMessages)) s.contextMessages = 10;
     s.contextMessages = Math.max(1, Math.min(50, Math.round(s.contextMessages)));
     return s;
@@ -1129,6 +1133,18 @@ const SCENE_CSS = `
 .wf_scene_npc_content { margin-top: 6px; font-size: 0.85em; opacity: 0.85; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
 .wf_scene_npc_in { opacity: 0.45; }
 .wf_scene_empty { opacity: 0.55; font-style: italic; padding: 8px 2px; }
+.wf_npc_portrait_wrap { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.wf_npc_portrait {
+    width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%;
+    background-size: cover; background-position: center top; cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    display: flex; align-items: center; justify-content: center; opacity: 0.9;
+}
+.wf_npc_portrait.no_pic { opacity: 0.45; font-size: 0.9em; }
+.wf_npc_portrait:hover { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); }
+.wf_npc_pic_btn { cursor: pointer; opacity: 0.5; font-size: 0.82em; padding: 2px; }
+.wf_npc_pic_btn:hover { opacity: 1; }
+.wf_scene_person .wf_npc_portrait_wrap { margin-top: 8px; }
 @media (max-width: 768px) { #wf_scene_window { width: 100vw; max-width: 100vw; } }`;
 
 function injectSceneStyles() {
@@ -1150,6 +1166,144 @@ function setSceneStatus(text, isError = false) {
 }
 
 const ROLE_CYCLE = { npc: 'character', character: 'user', user: 'npc' };
+
+// ----------------------------- NPC pictures --------------------------------
+// Each NPC can have a portrait the user uploads. The mapping is keyed by the
+// NPC's (normalised) name and stored globally in extension settings, so the
+// same picture follows that NPC across every chat that uses its lorebook.
+
+function npcKey(name) {
+    return String(name || '').trim().toLowerCase();
+}
+
+function getNpcPicture(name) {
+    const key = npcKey(name);
+    if (!key) return '';
+    const path = getSettings().npcPictures[key];
+    return typeof path === 'string' ? path : '';
+}
+
+function setNpcPicture(name, path) {
+    const key = npcKey(name);
+    if (!key) return;
+    getSettings().npcPictures[key] = path;
+    getContext().saveSettingsDebounced();
+}
+
+function removeNpcPicture(name) {
+    const key = npcKey(name);
+    if (!key) return;
+    delete getSettings().npcPictures[key];
+    getContext().saveSettingsDebounced();
+}
+
+/** Safe-for-selector token derived from an NPC name. */
+function npcSlug(name) {
+    return (npcKey(name).replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'npc');
+}
+
+/**
+ * Show an NPC's picture in the same draggable, zoomable popup used when you
+ * click a character's avatar in chat (reuses #zoomed_avatar_template). Clicking
+ * the same NPC again toggles the popup closed.
+ * @param {string} name
+ * @param {string} src
+ */
+function showNpcPicture(name, src) {
+    if (!src) return;
+    const forChar = `wf_npc_${npcSlug(name)}`;
+    const existing = $(`.zoomed_avatar[forChar="${forChar}"]`);
+    if (existing.length) {
+        existing.fadeOut(animation_duration, function () { $(this).remove(); });
+        return;
+    }
+
+    const template = $('#zoomed_avatar_template').html();
+    if (!template) { window.open(src, '_blank'); return; } // graceful fallback
+
+    const $el = $(template);
+    $el.attr('forChar', forChar).attr('id', `zoomFor_${forChar}`).addClass('draggable');
+    $el.find('.drag-grabber').attr('id', `zoomFor_${forChar}header`);
+    // NPC portraits are static images — drop the unused video/toggle controls.
+    $el.find('.zoomed_avatar_video, .zoomed_avatar_toggle').remove();
+
+    $('body').append($el);
+    const $img = $el.find('.zoomed_avatar_img');
+    $img.attr('src', src).attr('data-izoomify-url', src).attr('alt', name);
+    $el.css('display', 'flex').hide().fadeIn(animation_duration);
+
+    try { if ($.fn?.draggable) $el.draggable({ handle: '.drag-grabber' }); } catch { /* drag is optional */ }
+
+    $el.on('click touchend', (e) => {
+        if (e.target.closest('.dragClose')) {
+            $(`.zoomed_avatar[forChar="${forChar}"]`).fadeOut(animation_duration, function () { $(this).remove(); });
+        }
+    });
+}
+
+/**
+ * Open a file picker and upload the chosen image as this NPC's picture. Mirrors
+ * the background-upload flow: data URL → strip prefix → /api/images/upload.
+ * @param {string} name
+ * @param {Function} [onChange] Called after a successful upload to re-render.
+ */
+function uploadNpcPicture(name, onChange) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+            setSceneStatus(`Uploading picture for "${name}"…`);
+            const dataUrl = await getBase64Async(file);
+            const base64 = String(dataUrl).split(',')[1];
+            const ext = getFileExtension(file) || (file.type.split('/')[1] || 'png');
+            const fileName = `${npcSlug(name)}_${Date.now()}`;
+            const path = await saveBase64AsFile(base64, 'world_forge_npcs', fileName, ext);
+            setNpcPicture(name, path);
+            setSceneStatus(`Saved picture for "${name}".`);
+            if (typeof onChange === 'function') onChange();
+        } catch (error) {
+            warn('npc picture upload failed', error);
+            setSceneStatus(error?.message || 'Picture upload failed.', true);
+        }
+    });
+    input.click();
+}
+
+/**
+ * Build the portrait + picture controls for an NPC/character. With a picture:
+ * the portrait shows it and clicking it opens the zoom popup, plus replace/remove
+ * buttons. Without one: a placeholder whose click uploads a picture.
+ * @param {string} name
+ * @param {Function} onChange Re-render callback for the owning list.
+ * @returns {JQuery<HTMLElement>}
+ */
+function buildNpcPortrait(name, onChange) {
+    const src = getNpcPicture(name);
+    const $wrap = $('<div class="wf_npc_portrait_wrap"></div>');
+    const $portrait = $('<div class="wf_npc_portrait"></div>');
+
+    if (src) {
+        $portrait.addClass('has_pic')
+            .css('background-image', `url("${String(src).replace(/"/g, '%22')}")`)
+            .attr('title', 'Show picture')
+            .on('click', () => showNpcPicture(name, src));
+        const $replace = $('<div class="wf_npc_pic_btn" title="Replace picture"><i class="fa-solid fa-camera"></i></div>')
+            .on('click', (e) => { e.stopPropagation(); uploadNpcPicture(name, onChange); });
+        const $remove = $('<div class="wf_npc_pic_btn" title="Remove picture"><i class="fa-solid fa-trash-can"></i></div>')
+            .on('click', (e) => { e.stopPropagation(); removeNpcPicture(name); if (typeof onChange === 'function') onChange(); });
+        $wrap.append($portrait, $replace, $remove);
+    } else {
+        $portrait.addClass('no_pic')
+            .attr('title', 'Add picture')
+            .html('<i class="fa-solid fa-user"></i>')
+            .on('click', () => uploadNpcPicture(name, onChange));
+        $wrap.append($portrait);
+    }
+    return $wrap;
+}
 
 function renderPresent() {
     const scene = getSceneData();
@@ -1183,6 +1337,11 @@ function renderPresent() {
 
         $head.append($role, $name, $remove);
         $card.append($head);
+
+        // Portrait + picture controls for AI characters & NPCs (not the user).
+        if (person.role !== 'user') {
+            $card.append(buildNpcPortrait(person.name, renderPresent));
+        }
 
         // Stats only for non-player (AI) characters & NPCs.
         if (person.role !== 'user') {
@@ -1364,7 +1523,7 @@ function renderRoster() {
                 renderRoster();
             });
 
-        $head.append($title, $add);
+        $head.append(buildNpcPortrait(title, renderRoster), $title, $add);
         $card.append($head, $content);
         $list.append($card);
     }

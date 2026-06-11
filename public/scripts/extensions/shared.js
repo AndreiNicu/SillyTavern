@@ -393,6 +393,40 @@ export class ConnectionManagerRequestService {
         includePreset: true,
         includeInstruct: true,
         instructSettings: {},
+        deterministic: false,
+    };
+
+    // Sampler values for "logic" requests (relevance filtering, routing, extraction)
+    // that should be reproducible rather than creative. Greedy decoding (temperature 0)
+    // makes truncation samplers moot, but we still neutralize anything that can perturb
+    // the argmax token (dynamic temp, XTC, mirostat, smoothing, n-sigma) or penalize the
+    // short structured output (repetition/frequency/presence/DRY).
+    static DETERMINISTIC_OPENAI_PARAMS = {
+        temperature: 0,
+        top_p: 1,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+    };
+
+    static DETERMINISTIC_TEXTGEN_PARAMS = {
+        temperature: 0,
+        top_p: 1,
+        top_k: 0,
+        min_p: 0,
+        typical_p: 1,
+        tfs: 1,
+        top_a: 0,
+        repetition_penalty: 1,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+        mirostat_mode: 0,
+        dynamic_temperature: false,
+        smoothing_factor: 0,
+        xtc_threshold: 0,
+        xtc_probability: 0,
+        dry_multiplier: 0,
+        nsigma: 0,
+        top_n_sigma: 0,
     };
 
     static getAllowedTypes() {
@@ -413,11 +447,12 @@ export class ConnectionManagerRequestService {
      * @param {boolean?} [custom.includePreset=true]
      * @param {boolean?} [custom.includeInstruct=true]
      * @param {Partial<InstructSettings>?} [custom.instructSettings] Override instruct settings
+     * @param {boolean?} [custom.deterministic=false] Use reproducible "logic" sampling (greedy, no penalties) instead of the profile's creative samplers
      * @param {Record<string, any>} [overridePayload] - Override payload for the request
      * @returns {Promise<import('../custom-request.js').ExtractedData | (() => AsyncGenerator<import('../custom-request.js').StreamResponse>)>} If not streaming, returns extracted data; if streaming, returns a function that creates an AsyncGenerator
      */
     static async sendRequest(profileId, prompt, maxTokens, custom = this.defaultSendRequestParams, overridePayload = {}) {
-        const { stream, signal, extractData, includePreset, includeInstruct, instructSettings } = { ...this.defaultSendRequestParams, ...custom };
+        const { stream, signal, extractData, includePreset, includeInstruct, instructSettings, deterministic } = { ...this.defaultSendRequestParams, ...custom };
 
         const context = SillyTavern.getContext();
         if (context.extensionSettings.disabledExtensions.includes('connection-manager')) {
@@ -426,6 +461,15 @@ export class ConnectionManagerRequestService {
 
         const profile = this.getProfile(profileId);
         const selectedApiMap = this.validateProfile(profile);
+
+        // For logic requests, force deterministic samplers. Applied under the explicit
+        // overridePayload so callers can still tweak individual fields if needed.
+        if (deterministic) {
+            const detParams = selectedApiMap.selected === 'openai'
+                ? this.DETERMINISTIC_OPENAI_PARAMS
+                : this.DETERMINISTIC_TEXTGEN_PARAMS;
+            overridePayload = { ...detParams, ...overridePayload };
+        }
 
         try {
             switch (selectedApiMap.selected) {

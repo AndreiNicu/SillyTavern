@@ -741,13 +741,16 @@ const SETTINGS_HTML = `
 const STYLE_CSS = `
 .wf_km_overlay {
     position: fixed; inset: 0; z-index: 10010;
+    /* Explicit size: inset-0 stretching collapses to 0 height on mobile, where
+       ST's transformed <html> (the fixed-position containing block) has 0 height. */
+    width: 100vw; height: 100vh; height: 100dvh;
     display: flex; align-items: center; justify-content: center;
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
 }
 .wf_km_overlay.wf_km_hidden { display: none !important; }
 .wf_km_modal {
-    width: 560px; max-width: 92vw; max-height: 85vh;
+    width: 560px; max-width: 92vw; max-height: 85vh; max-height: 85dvh;
     display: flex; flex-direction: column;
     background-color: var(--SmartThemeBlurTintColor, #1f1f1f);
     color: var(--SmartThemeBodyColor, #e0e0e0);
@@ -1133,7 +1136,14 @@ const SCENE_CSS = `
 #wf_scene_window {
     position: fixed !important;
     top: var(--topBarBlockSize, 40px) !important;
-    right: 0 !important; left: auto !important; bottom: 0 !important;
+    right: 0 !important; left: auto !important; bottom: auto !important;
+    /* Explicit viewport-unit height instead of top+bottom stretching: ST core sets
+       -webkit-transform/-webkit-perspective on <html>, making it the containing
+       block for fixed elements, and on mobile body{position:fixed} collapses
+       <html> to 0 height — so a top+bottom-stretched panel computes to 0px tall.
+       100vh is the fallback for browsers without dvh support. */
+    height: calc(100vh - var(--topBarBlockSize, 40px)) !important;
+    height: calc(100dvh - var(--topBarBlockSize, 40px)) !important;
     width: 420px !important; max-width: 90vw !important;
     margin: 0 !important; z-index: 3000;
     background-color: var(--SmartThemeBlurTintColor, #1f1f1f);
@@ -1221,7 +1231,16 @@ const SCENE_CSS = `
 .wf_npc_pic_btn { cursor: pointer; opacity: 0.5; font-size: 0.82em; padding: 2px; }
 .wf_npc_pic_btn:hover { opacity: 1; }
 .wf_scene_person .wf_npc_portrait_wrap { margin-top: 8px; }
-@media (max-width: 768px) { #wf_scene_window { width: 100vw; max-width: 100vw; } }`;
+/* ST's mobile breakpoint (see mobile-styles.css). Declarations need !important to
+   beat the base rule above. Keep the panel docked to the right edge with a sliver
+   of chat visible, and pad for the home indicator on notched phones. */
+@media screen and (max-width: 1000px) {
+    #wf_scene_window {
+        width: min(420px, 92vw) !important;
+        max-width: 92vw !important;
+        padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+    }
+}`;
 
 function injectSceneStyles() {
     if (document.getElementById('wf_scene_inline_styles')) return;

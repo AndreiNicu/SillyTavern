@@ -2,6 +2,7 @@ import { eventSource, event_types, this_chid, characters, substituteParams, chat
 import { extension_settings, getContext } from '../../extensions.js';
 import { ConnectionManagerRequestService } from '../shared.js';
 import { getBase64Async, saveBase64AsFile, getFileExtension } from '../../utils.js';
+import { isDirectorCharacter } from '../../group-chats.js';
 import {
     loadWorldInfo,
     saveWorldInfo,
@@ -554,6 +555,46 @@ function listNames(people) {
 }
 
 /**
+ * Tolerant person-name comparison: exact (case-insensitive), or one name is the
+ * first word of the other ("Anna" ↔ "Anna Johansson"). Mirrors the group LLM
+ * router's first-token matching so the scene block never tells a card not to
+ * speak for the very character it is playing under a shorter/longer name.
+ */
+function sameCharacter(a, b) {
+    const x = String(a || '').trim().toLowerCase();
+    const y = String(b || '').trim().toLowerCase();
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const [shorter, longer] = x.length <= y.length ? [x, y] : [y, x];
+    return longer.startsWith(`${shorter} `) || longer.startsWith(`${shorter}'`);
+}
+
+/** Group member characters of the currently selected group (solo chat = []). */
+function getGroupMembers() {
+    const ctx = getContext();
+    const group = ctx.groupId ? (ctx.groups || []).find(g => g.id === ctx.groupId) : null;
+    if (!group) return [];
+    return (group.members || [])
+        .map(avatar => characters.find(c => c.avatar === avatar))
+        .filter(Boolean);
+}
+
+/**
+ * The group member card that plays the NPCs: the explicit per-chat selection
+ * when set, otherwise the single Director/NPC-tagged member (same tag
+ * classification the group LLM router uses). Ambiguous (several tagged) or
+ * none → ''.
+ * @param {SceneData} scene
+ * @returns {string}
+ */
+function resolveDirectorName(scene) {
+    const explicit = String(scene.director || '').trim();
+    if (explicit) return explicit;
+    const tagged = getGroupMembers().filter(isDirectorCharacter);
+    return tagged.length === 1 ? String(tagged[0].name || '').trim() : '';
+}
+
+/**
  * Render the scene record as a narrative, prompt-friendly block that states the
  * location and — crucially — WHO PLAYS WHOM, so the model never speaks for the
  * human player or for characters owned by other group members.
@@ -575,14 +616,14 @@ function buildSceneBlock(scene) {
 
     const present = (scene.present || []).filter(p => p && String(p.name || '').trim());
     if (present.length) {
-        const eq = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
         const players = present.filter(p => p.role === 'user');
         const cast = present.filter(p => p.role === 'character');
         const npcs = present.filter(p => p.role === 'npc');
 
         const isGroup = !!getContext().groupId;
         const speaker = isGroup ? String(getActiveCharacter()?.name || '').trim() : '';
-        const director = String(scene.director || '').trim();
+        const director = isGroup ? resolveDirectorName(scene) : '';
+        const speakerIsDirector = !!(speaker && director && sameCharacter(director, speaker));
 
         lines.push(`Present in the scene: ${present.map(p => p.name).join(', ')}.`);
 
@@ -592,17 +633,23 @@ function buildSceneBlock(scene) {
         }
 
         if (isGroup) {
-            if (speaker) lines.push(`You are currently replying as ${speaker}.`);
+            if (speakerIsDirector) {
+                lines.push(`You are ${speaker}, the World Director: you narrate the scene and voice the NPCs.`);
+            } else if (speaker) {
+                lines.push(`You are currently replying as ${speaker}.`);
+            }
+            // "Do not write dialogue/decisions" (not "do not mention"): an omniscient
+            // Director card may still describe other cast members in its narration.
             for (const c of cast) {
-                if (speaker && eq(c.name, speaker)) continue;
-                lines.push(`${c.name} is played by their own character card. Do not speak or act for ${c.name}.`);
+                if (speaker && sameCharacter(c.name, speaker)) continue;
+                lines.push(`${c.name} is played by their own character card. Do not write dialogue or make decisions for ${c.name}.`);
             }
             if (npcs.length) {
                 const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
-                if (director && speaker && eq(director, speaker)) {
-                    lines.push(`${listNames(npcs)} ${are} played by you, ${director}, acting as the World Director.`);
+                if (speakerIsDirector) {
+                    lines.push(`${listNames(npcs)} ${are} for you to voice.`);
                 } else if (director) {
-                    lines.push(`${listNames(npcs)} ${are} played by ${director}, the World Director. Do not speak or act for ${npcs.length > 1 ? 'them' : npcs[0].name}.`);
+                    lines.push(`${listNames(npcs)} ${are} played by ${director}, the World Director. Do not write dialogue or make decisions for ${npcs.length > 1 ? 'them' : npcs[0].name}.`);
                 } else {
                     lines.push(`${listNames(npcs)} ${are} in the scene.`);
                 }
@@ -1698,22 +1745,23 @@ function renderSceneDirector() {
     const $select = $('#wf_scene_director');
     if (!$row.length || !$select.length) return;
 
-    const ctx = getContext();
-    const group = ctx.groupId ? (ctx.groups || []).find(g => g.id === ctx.groupId) : null;
-    if (!group) {
+    if (!getContext().groupId) {
         $row.hide();
         return;
     }
 
-    const memberNames = (group.members || [])
-        .map(avatar => characters.find(c => c.avatar === avatar)?.name)
-        .filter(Boolean);
+    const members = getGroupMembers();
+    const memberNames = members.map(m => m.name).filter(Boolean);
     const scene = getSceneData();
 
+    // Auto mode: with no explicit pick, the single Director/NPC-tagged member
+    // (the same tag classification the group reply router uses) is assumed.
+    const autoDetected = scene.director ? '' : resolveDirectorName(scene);
     $select.empty();
-    $('<option></option>').val('').text('— not set —').appendTo($select);
-    for (const name of memberNames) {
-        $('<option></option>').val(name).text(name).appendTo($select);
+    $('<option></option>').val('').text(autoDetected ? `— auto: ${autoDetected} —` : '— not set —').appendTo($select);
+    for (const member of members) {
+        const label = isDirectorCharacter(member) ? `${member.name} (Director tag)` : member.name;
+        $('<option></option>').val(member.name).text(label).appendTo($select);
     }
     // Keep a stale value visible (e.g. the card was removed from the group)
     // instead of silently snapping the selection back to "not set".

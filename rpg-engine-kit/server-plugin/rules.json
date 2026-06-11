@@ -1,0 +1,30 @@
+{
+    "_comment": "DEMO / FALLBACK rules only — non-canonical. Real games get their tier tables and stats from World-Forge data (per-entity damage_tiers / bestiary tier_tables). These values are used only when an entity specifies nothing of its own, so the kit stays runnable standalone for quick testing. The parser LLM only classifies a damage_tier; the server maps the tier to dice and rolls it here.",
+    "tiers": {
+        "none": "0",
+        "graze": "1d4",
+        "light": "1d6",
+        "medium": "2d6",
+        "heavy": "3d6",
+        "critical": "4d8"
+    },
+    "npc_template": {
+        "name": "",
+        "hp": 12,
+        "maxhp": 12,
+        "ac": 12,
+        "armor_dr": 0,
+        "conditions": "none"
+    },
+    "unconscious_at": 0,
+    "unconscious_condition": "unconscious",
+
+    "_safeguards_comment": "Deterministic guards that limit the blast radius of an LLM tier mislabel. See rpg-engine-kit/schema/README.md (Reliability) for the rationale.",
+    "allow_auto_create": true,
+    "governor": {
+        "_comment": "Caps a single hit's damage as a fraction of the target's maxhp, so a misclassified 'heavy/critical' can't one-shot. 'critical' is exempt by design (crits are meant to be lethal). Set enabled:false to disable.",
+        "enabled": true,
+        "max_fraction": 0.35,
+        "exempt_tiers": ["critical"]
+    }
+}

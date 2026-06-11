@@ -1,0 +1,36 @@
+{
+    "kind": "user_rpg_profile",
+    "schema_version": "1.0.0",
+    "world_id": "lucifer",
+    "stats": {
+        "id": "player",
+        "display_name": "Andrei Petrov",
+        "level": 2,
+        "abilities": { "str": 2, "dex": 3, "con": 2, "int": 1, "wis": 1, "cha": 2 },
+        "combat": {
+            "hp": 24,
+            "maxhp": 24,
+            "ac": 15,
+            "armor_dr": 1,
+            "conditions": "none",
+            "default_attack_tier": "light"
+        },
+        "equipment": [
+            {
+                "id": "leather_coat",
+                "name": "Reinforced Leather Coat",
+                "slot": "body",
+                "type": "armor",
+                "combat_mods": { "armor_dr_bonus": 1, "ac_bonus": 2 }
+            },
+            {
+                "id": "pistol",
+                "name": "Engraved Pistol",
+                "slot": "main_hand",
+                "type": "weapon",
+                "combat_mods": { "attack_tier": "medium", "attack_type": "piercing" }
+            }
+        ],
+        "progression": { "xp": 300, "next_level_xp": 900 }
+    }
+}

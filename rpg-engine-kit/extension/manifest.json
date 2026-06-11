@@ -1,0 +1,12 @@
+{
+    "display_name": "RPG Engine",
+    "loading_order": 101,
+    "requires": [],
+    "optional": [],
+    "generate_interceptor": "rpgEngine_interceptGeneration",
+    "js": "index.js",
+    "css": "style.css",
+    "author": "wonderful-maxwell kit",
+    "version": "0.1.0",
+    "homePage": "https://github.com/SillyTavern/SillyTavern"
+}

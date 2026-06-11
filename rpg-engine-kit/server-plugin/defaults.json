@@ -1,0 +1,13 @@
+{
+    "_comment": "Global default sheet. /reset copies this into games/{chatId}/active.json, so restarting a game restores these baseline values. 'player' is always present; NPCs are created on demand from rules.json -> npc_template the first time they are targeted. armor_dr is flat damage reduction subtracted from every physical hit (the 'thick armor' example).",
+    "entities": {
+        "player": {
+            "name": "Adventurer",
+            "hp": 20,
+            "maxhp": 20,
+            "ac": 14,
+            "armor_dr": 0,
+            "conditions": "none"
+        }
+    }
+}

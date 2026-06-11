@@ -1,0 +1,11 @@
+.rpg-engine-settings .inline-drawer-content {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rpg-engine-settings label[for="rpg_depth"] {
+    margin-top: 6px;
+    font-size: 0.9em;
+    opacity: 0.8;
+}

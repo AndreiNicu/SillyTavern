@@ -1,0 +1,7 @@
+{
+    "name": "sillytavern-rpg-engine",
+    "version": "0.1.0",
+    "description": "Authoritative server-side stat tracking, combat math, and undo snapshots for tabletop-style roleplay.",
+    "type": "commonjs",
+    "main": "index.js"
+}

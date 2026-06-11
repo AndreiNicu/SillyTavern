@@ -163,7 +163,11 @@ Some cards are listed under DIRECTORS. A Director voices any character that is N
 Output format: a JSON array of character names, and nothing else.
 Examples: ["Alice"]   ["Alice","Bob"]   ["Bubbles"]   []`;
 
-const DIRECTOR_TAG_NAMES = ['director', 'npc'];
+// Tag names that mark a card as a Director / NPC host. Matched exactly
+// (case/accent-insensitive), so common hyphen/space variants are listed too —
+// e.g. the World Forge sample director card ships tagged 'world-director' and
+// 'npc-controller'.
+const DIRECTOR_TAG_NAMES = ['director', 'npc', 'world-director', 'world director', 'npc-controller', 'npc controller'];
 
 export const group_generation_mode = {
     SWAP: 0,
@@ -1413,7 +1417,7 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
  * @param {object} character Character object
  * @returns {boolean}
  */
-function isDirectorCharacter(character) {
+export function isDirectorCharacter(character) {
     if (!character?.avatar) return false;
     const charTagIds = tag_map[character.avatar];
     if (!Array.isArray(charTagIds) || charTagIds.length === 0) return false;

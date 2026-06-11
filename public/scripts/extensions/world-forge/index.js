@@ -2,6 +2,7 @@ import { eventSource, event_types, this_chid, characters, substituteParams, chat
 import { extension_settings, getContext } from '../../extensions.js';
 import { ConnectionManagerRequestService } from '../shared.js';
 import { getBase64Async, saveBase64AsFile, getFileExtension } from '../../utils.js';
+import { isDirectorCharacter } from '../../group-chats.js';
 import {
     loadWorldInfo,
     saveWorldInfo,
@@ -486,13 +487,16 @@ const SCENE_META_KEY = 'world_forge_scene';
 const SCENE_EXTRACT_MAX_TOKENS = 1024;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
-/** @typedef {{location: string, present: ScenePerson[], inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{location: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
     return {
         location: '',
         present: [],
+        // Group chats only: name of the group member card that plays the NPCs
+        // (e.g. an "NPC controller" card backed by a lorebook). '' = unset.
+        director: '',
         // Author's-Note-style placement (injected under our own extension-prompt key).
         inject: true,
         injectPosition: extension_prompt_types.IN_CHAT, // 1 = in chat @ depth
@@ -516,6 +520,7 @@ function getSceneData() {
     }
     if (typeof s.location !== 'string') s.location = '';
     if (!Array.isArray(s.present)) s.present = [];
+    if (typeof s.director !== 'string') s.director = '';
     if (typeof s.inject !== 'boolean') s.inject = true;
     if (![extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT].includes(s.injectPosition)) s.injectPosition = extension_prompt_types.IN_CHAT;
     if (typeof s.injectDepth !== 'number' || !Number.isFinite(s.injectDepth)) s.injectDepth = 4;
@@ -542,21 +547,120 @@ function saveSceneData() {
     }, 400);
 }
 
+/** "Anna", "Anna and Tom", "Anna, Mira and Tom". */
+function listNames(people) {
+    const names = people.map(p => p.name);
+    if (names.length <= 1) return names.join('');
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
 /**
- * Render the scene record as a compact, prompt-friendly block. Lines with no
- * data are omitted; returns '' when there's nothing worth injecting.
+ * Tolerant person-name comparison: exact (case-insensitive), or one name is the
+ * first word of the other ("Anna" ↔ "Anna Johansson"). Mirrors the group LLM
+ * router's first-token matching so the scene block never tells a card not to
+ * speak for the very character it is playing under a shorter/longer name.
+ */
+function sameCharacter(a, b) {
+    const x = String(a || '').trim().toLowerCase();
+    const y = String(b || '').trim().toLowerCase();
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const [shorter, longer] = x.length <= y.length ? [x, y] : [y, x];
+    return longer.startsWith(`${shorter} `) || longer.startsWith(`${shorter}'`);
+}
+
+/** Group member characters of the currently selected group (solo chat = []). */
+function getGroupMembers() {
+    const ctx = getContext();
+    const group = ctx.groupId ? (ctx.groups || []).find(g => g.id === ctx.groupId) : null;
+    if (!group) return [];
+    return (group.members || [])
+        .map(avatar => characters.find(c => c.avatar === avatar))
+        .filter(Boolean);
+}
+
+/**
+ * The group member card that plays the NPCs: the explicit per-chat selection
+ * when set, otherwise the single Director/NPC-tagged member (same tag
+ * classification the group LLM router uses). Ambiguous (several tagged) or
+ * none → ''.
+ * @param {SceneData} scene
+ * @returns {string}
+ */
+function resolveDirectorName(scene) {
+    const explicit = String(scene.director || '').trim();
+    if (explicit) return explicit;
+    const tagged = getGroupMembers().filter(isDirectorCharacter);
+    return tagged.length === 1 ? String(tagged[0].name || '').trim() : '';
+}
+
+/**
+ * Render the scene record as a narrative, prompt-friendly block that states the
+ * location and — crucially — WHO PLAYS WHOM, so the model never speaks for the
+ * human player or for characters owned by other group members.
+ *
+ * In group chats the block is speaker-aware: generateGroupWrapper sets the
+ * active character (this_chid) before Generate() fires GENERATION_AFTER_COMMANDS,
+ * so by the time updateSceneExtensionPrompt rebuilds this block we know which
+ * member is about to reply and can phrase the framing from their perspective
+ * ("you are replying as Anna" / "the NPCs are played by you, the World Director").
+ *
+ * Lines with no data are omitted; returns '' when there's nothing to inject.
  * @param {SceneData} scene
  * @returns {string}
  */
 function buildSceneBlock(scene) {
     const lines = [];
     const location = String(scene.location || '').trim();
-    if (location) lines.push(`Location: ${location}`);
+    if (location) lines.push(`The current scene takes place at: ${location}`);
 
     const present = (scene.present || []).filter(p => p && String(p.name || '').trim());
     if (present.length) {
-        const names = present.map(p => (p.role === 'user' ? `${p.name} (you)` : p.name));
-        lines.push(`Present: ${names.join(', ')}`);
+        const players = present.filter(p => p.role === 'user');
+        const cast = present.filter(p => p.role === 'character');
+        const npcs = present.filter(p => p.role === 'npc');
+
+        const isGroup = !!getContext().groupId;
+        const speaker = isGroup ? String(getActiveCharacter()?.name || '').trim() : '';
+        const director = isGroup ? resolveDirectorName(scene) : '';
+        const speakerIsDirector = !!(speaker && director && sameCharacter(director, speaker));
+
+        lines.push(`Present in the scene: ${present.map(p => p.name).join(', ')}.`);
+
+        if (players.length) {
+            const them = players.length > 1 ? 'them' : players[0].name;
+            lines.push(`${listNames(players)} ${players.length > 1 ? 'are' : 'is'} played by the human player. Never speak, act, or decide for ${them}.`);
+        }
+
+        if (isGroup) {
+            if (speakerIsDirector) {
+                lines.push(`You are ${speaker}, the World Director: you narrate the scene and voice the NPCs.`);
+            } else if (speaker) {
+                lines.push(`You are currently replying as ${speaker}.`);
+            }
+            // "Do not write dialogue/decisions" (not "do not mention"): an omniscient
+            // Director card may still describe other cast members in its narration.
+            for (const c of cast) {
+                if (speaker && sameCharacter(c.name, speaker)) continue;
+                lines.push(`${c.name} is played by their own character card. Do not write dialogue or make decisions for ${c.name}.`);
+            }
+            if (npcs.length) {
+                const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
+                if (speakerIsDirector) {
+                    lines.push(`${listNames(npcs)} ${are} for you to voice.`);
+                } else if (director) {
+                    lines.push(`${listNames(npcs)} ${are} played by ${director}, the World Director. Do not write dialogue or make decisions for ${npcs.length > 1 ? 'them' : npcs[0].name}.`);
+                } else {
+                    lines.push(`${listNames(npcs)} ${are} in the scene.`);
+                }
+            }
+        } else {
+            if (cast.length) lines.push(`You are playing ${listNames(cast)}.`);
+            if (npcs.length) {
+                const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
+                lines.push(`${listNames(npcs)} ${are} ${cast.length ? 'also ' : ''}played by you, acting as the World Director.`);
+            }
+        }
 
         const status = [];
         for (const p of present) {
@@ -1069,6 +1173,12 @@ const SCENE_WINDOW_HTML = `
             <textarea id="wf_scene_location" class="text_pole wf_scene_location" rows="4"
                 placeholder="e.g. The rain-soaked back alley behind the Copper Lantern tavern, near midnight."></textarea>
 
+            <div id="wf_scene_director_row" style="display:none;">
+                <label for="wf_scene_director" data-i18n="World Director (group member who plays the NPCs)">World Director (group member who plays the NPCs)</label>
+                <select id="wf_scene_director" class="text_pole"></select>
+                <small class="notes" data-i18n="The scene block will tell this card it plays the NPCs, and tell every other card not to speak for them.">The scene block will tell this card it plays the NPCs, and tell every other card not to speak for them.</small>
+            </div>
+
             <div class="wf_scene_inject_cfg">
                 <div class="wf_scene_inject_cfg_head" id="wf_scene_inject_cfg_toggle">
                     <i class="fa-solid fa-syringe"></i>
@@ -1174,6 +1284,7 @@ const SCENE_CSS = `
 .wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
 .wf_scene_pane_active { display: flex; }
 .wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
+#wf_scene_director_row { display: flex; flex-direction: column; gap: 4px; }
 .wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
 .wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
 .wf_scene_inject_cfg_head:hover { opacity: 1; }
@@ -1624,6 +1735,43 @@ function renderRoster() {
     }
 }
 
+/**
+ * Populate the World Director dropdown with the current group's member names.
+ * Only meaningful (and only shown) in group chats; in solo chats the active
+ * character implicitly plays everything, so the row stays hidden.
+ */
+function renderSceneDirector() {
+    const $row = $('#wf_scene_director_row');
+    const $select = $('#wf_scene_director');
+    if (!$row.length || !$select.length) return;
+
+    if (!getContext().groupId) {
+        $row.hide();
+        return;
+    }
+
+    const members = getGroupMembers();
+    const memberNames = members.map(m => m.name).filter(Boolean);
+    const scene = getSceneData();
+
+    // Auto mode: with no explicit pick, the single Director/NPC-tagged member
+    // (the same tag classification the group reply router uses) is assumed.
+    const autoDetected = scene.director ? '' : resolveDirectorName(scene);
+    $select.empty();
+    $('<option></option>').val('').text(autoDetected ? `— auto: ${autoDetected} —` : '— not set —').appendTo($select);
+    for (const member of members) {
+        const label = isDirectorCharacter(member) ? `${member.name} (Director tag)` : member.name;
+        $('<option></option>').val(member.name).text(label).appendTo($select);
+    }
+    // Keep a stale value visible (e.g. the card was removed from the group)
+    // instead of silently snapping the selection back to "not set".
+    if (scene.director && !memberNames.includes(scene.director)) {
+        $('<option></option>').val(scene.director).text(`${scene.director} (not in group)`).appendTo($select);
+    }
+    $select.val(scene.director || '');
+    $row.show();
+}
+
 function renderScene() {
     const scene = getSceneData();
     $('#wf_scene_location').val(scene.location);
@@ -1634,6 +1782,7 @@ function renderScene() {
     $('#wf_scene_inject_interval').val(scene.injectInterval);
     // Depth only matters for the "in chat @ depth" position.
     $('#wf_scene_inject_depth_row').toggle(scene.injectPosition === extension_prompt_types.IN_CHAT);
+    renderSceneDirector();
     renderPresent();
     renderRoster();
 }
@@ -1711,6 +1860,11 @@ function initSceneTrackerUI() {
         });
         $('#wf_scene_inject').on('change', function () {
             getSceneData().inject = $(this).prop('checked');
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_director').on('change', function () {
+            getSceneData().director = String($(this).val() || '');
             saveSceneData();
             updateSceneExtensionPrompt();
         });

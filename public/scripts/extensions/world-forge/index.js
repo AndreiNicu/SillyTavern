@@ -486,13 +486,16 @@ const SCENE_META_KEY = 'world_forge_scene';
 const SCENE_EXTRACT_MAX_TOKENS = 1024;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
-/** @typedef {{location: string, present: ScenePerson[], inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{location: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
     return {
         location: '',
         present: [],
+        // Group chats only: name of the group member card that plays the NPCs
+        // (e.g. an "NPC controller" card backed by a lorebook). '' = unset.
+        director: '',
         // Author's-Note-style placement (injected under our own extension-prompt key).
         inject: true,
         injectPosition: extension_prompt_types.IN_CHAT, // 1 = in chat @ depth
@@ -516,6 +519,7 @@ function getSceneData() {
     }
     if (typeof s.location !== 'string') s.location = '';
     if (!Array.isArray(s.present)) s.present = [];
+    if (typeof s.director !== 'string') s.director = '';
     if (typeof s.inject !== 'boolean') s.inject = true;
     if (![extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT].includes(s.injectPosition)) s.injectPosition = extension_prompt_types.IN_CHAT;
     if (typeof s.injectDepth !== 'number' || !Number.isFinite(s.injectDepth)) s.injectDepth = 4;
@@ -542,21 +546,74 @@ function saveSceneData() {
     }, 400);
 }
 
+/** "Anna", "Anna and Tom", "Anna, Mira and Tom". */
+function listNames(people) {
+    const names = people.map(p => p.name);
+    if (names.length <= 1) return names.join('');
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
 /**
- * Render the scene record as a compact, prompt-friendly block. Lines with no
- * data are omitted; returns '' when there's nothing worth injecting.
+ * Render the scene record as a narrative, prompt-friendly block that states the
+ * location and — crucially — WHO PLAYS WHOM, so the model never speaks for the
+ * human player or for characters owned by other group members.
+ *
+ * In group chats the block is speaker-aware: generateGroupWrapper sets the
+ * active character (this_chid) before Generate() fires GENERATION_AFTER_COMMANDS,
+ * so by the time updateSceneExtensionPrompt rebuilds this block we know which
+ * member is about to reply and can phrase the framing from their perspective
+ * ("you are replying as Anna" / "the NPCs are played by you, the World Director").
+ *
+ * Lines with no data are omitted; returns '' when there's nothing to inject.
  * @param {SceneData} scene
  * @returns {string}
  */
 function buildSceneBlock(scene) {
     const lines = [];
     const location = String(scene.location || '').trim();
-    if (location) lines.push(`Location: ${location}`);
+    if (location) lines.push(`The current scene takes place at: ${location}`);
 
     const present = (scene.present || []).filter(p => p && String(p.name || '').trim());
     if (present.length) {
-        const names = present.map(p => (p.role === 'user' ? `${p.name} (you)` : p.name));
-        lines.push(`Present: ${names.join(', ')}`);
+        const eq = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+        const players = present.filter(p => p.role === 'user');
+        const cast = present.filter(p => p.role === 'character');
+        const npcs = present.filter(p => p.role === 'npc');
+
+        const isGroup = !!getContext().groupId;
+        const speaker = isGroup ? String(getActiveCharacter()?.name || '').trim() : '';
+        const director = String(scene.director || '').trim();
+
+        lines.push(`Present in the scene: ${present.map(p => p.name).join(', ')}.`);
+
+        if (players.length) {
+            const them = players.length > 1 ? 'them' : players[0].name;
+            lines.push(`${listNames(players)} ${players.length > 1 ? 'are' : 'is'} played by the human player. Never speak, act, or decide for ${them}.`);
+        }
+
+        if (isGroup) {
+            if (speaker) lines.push(`You are currently replying as ${speaker}.`);
+            for (const c of cast) {
+                if (speaker && eq(c.name, speaker)) continue;
+                lines.push(`${c.name} is played by their own character card. Do not speak or act for ${c.name}.`);
+            }
+            if (npcs.length) {
+                const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
+                if (director && speaker && eq(director, speaker)) {
+                    lines.push(`${listNames(npcs)} ${are} played by you, ${director}, acting as the World Director.`);
+                } else if (director) {
+                    lines.push(`${listNames(npcs)} ${are} played by ${director}, the World Director. Do not speak or act for ${npcs.length > 1 ? 'them' : npcs[0].name}.`);
+                } else {
+                    lines.push(`${listNames(npcs)} ${are} in the scene.`);
+                }
+            }
+        } else {
+            if (cast.length) lines.push(`You are playing ${listNames(cast)}.`);
+            if (npcs.length) {
+                const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
+                lines.push(`${listNames(npcs)} ${are} ${cast.length ? 'also ' : ''}played by you, acting as the World Director.`);
+            }
+        }
 
         const status = [];
         for (const p of present) {
@@ -1069,6 +1126,12 @@ const SCENE_WINDOW_HTML = `
             <textarea id="wf_scene_location" class="text_pole wf_scene_location" rows="4"
                 placeholder="e.g. The rain-soaked back alley behind the Copper Lantern tavern, near midnight."></textarea>
 
+            <div id="wf_scene_director_row" style="display:none;">
+                <label for="wf_scene_director" data-i18n="World Director (group member who plays the NPCs)">World Director (group member who plays the NPCs)</label>
+                <select id="wf_scene_director" class="text_pole"></select>
+                <small class="notes" data-i18n="The scene block will tell this card it plays the NPCs, and tell every other card not to speak for them.">The scene block will tell this card it plays the NPCs, and tell every other card not to speak for them.</small>
+            </div>
+
             <div class="wf_scene_inject_cfg">
                 <div class="wf_scene_inject_cfg_head" id="wf_scene_inject_cfg_toggle">
                     <i class="fa-solid fa-syringe"></i>
@@ -1174,6 +1237,7 @@ const SCENE_CSS = `
 .wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
 .wf_scene_pane_active { display: flex; }
 .wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
+#wf_scene_director_row { display: flex; flex-direction: column; gap: 4px; }
 .wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
 .wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
 .wf_scene_inject_cfg_head:hover { opacity: 1; }
@@ -1624,6 +1688,42 @@ function renderRoster() {
     }
 }
 
+/**
+ * Populate the World Director dropdown with the current group's member names.
+ * Only meaningful (and only shown) in group chats; in solo chats the active
+ * character implicitly plays everything, so the row stays hidden.
+ */
+function renderSceneDirector() {
+    const $row = $('#wf_scene_director_row');
+    const $select = $('#wf_scene_director');
+    if (!$row.length || !$select.length) return;
+
+    const ctx = getContext();
+    const group = ctx.groupId ? (ctx.groups || []).find(g => g.id === ctx.groupId) : null;
+    if (!group) {
+        $row.hide();
+        return;
+    }
+
+    const memberNames = (group.members || [])
+        .map(avatar => characters.find(c => c.avatar === avatar)?.name)
+        .filter(Boolean);
+    const scene = getSceneData();
+
+    $select.empty();
+    $('<option></option>').val('').text('— not set —').appendTo($select);
+    for (const name of memberNames) {
+        $('<option></option>').val(name).text(name).appendTo($select);
+    }
+    // Keep a stale value visible (e.g. the card was removed from the group)
+    // instead of silently snapping the selection back to "not set".
+    if (scene.director && !memberNames.includes(scene.director)) {
+        $('<option></option>').val(scene.director).text(`${scene.director} (not in group)`).appendTo($select);
+    }
+    $select.val(scene.director || '');
+    $row.show();
+}
+
 function renderScene() {
     const scene = getSceneData();
     $('#wf_scene_location').val(scene.location);
@@ -1634,6 +1734,7 @@ function renderScene() {
     $('#wf_scene_inject_interval').val(scene.injectInterval);
     // Depth only matters for the "in chat @ depth" position.
     $('#wf_scene_inject_depth_row').toggle(scene.injectPosition === extension_prompt_types.IN_CHAT);
+    renderSceneDirector();
     renderPresent();
     renderRoster();
 }
@@ -1711,6 +1812,11 @@ function initSceneTrackerUI() {
         });
         $('#wf_scene_inject').on('change', function () {
             getSceneData().inject = $(this).prop('checked');
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_director').on('change', function () {
+            getSceneData().director = String($(this).val() || '');
             saveSceneData();
             updateSceneExtensionPrompt();
         });

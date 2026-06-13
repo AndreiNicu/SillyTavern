@@ -1,0 +1,11 @@
+{
+    "display_name": "World Loader",
+    "loading_order": 102,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "wonderful-pascal kit",
+    "version": "0.1.0",
+    "homePage": "https://github.com/AndreiNicu/SillyTavern"
+}

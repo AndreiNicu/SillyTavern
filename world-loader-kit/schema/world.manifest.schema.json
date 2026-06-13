@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/AndreiNicu/World-Forge/world.manifest.schema.json",
+  "title": "World-Forge world manifest",
+  "description": "Top-level index of a World-Forge export bundle. Placed at the root of the export (zip) as 'world.manifest.json'. The World Loader prefers this file; when it is absent the loader falls back to filename-convention sniffing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "world"],
+  "properties": {
+    "kind": { "const": "world_manifest" },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semver of this contract. Currently '1.0.0'. A major bump means the loader may refuse a mismatched document rather than guess."
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "Stable snake_case world id, e.g. 'lucifer'. Used to namespace and de-duplicate on re-import."
+        },
+        "name": { "type": "string", "description": "Human-readable world name shown in the loader." },
+        "mode": { "enum": ["arc", "sandbox"], "default": "arc", "description": "Narrative mode. 'arc' worlds activate one arc lorebook at a time; 'sandbox' worlds keep arc state always-on." },
+        "description": { "type": "string", "description": "Optional blurb shown in the loader's preview." }
+      }
+    },
+    "preset": {
+      "type": "string",
+      "description": "Filename of the chat-completion preset JSON to import (e.g. 'Lucifer-Lucifer_ChatPreset.json'). Omit if the world ships no preset."
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description_file"],
+      "properties": {
+        "name": { "type": "string", "description": "Persona display name for the human player ({{user}})." },
+        "description_file": { "type": "string", "description": "Filename of the markdown persona description (e.g. 'Lucifer-User.md'). Its contents become the persona description." },
+        "lorebook": { "type": "string", "description": "Filename of the protagonist lorebook bound to this persona (Tier-2 player identity)." }
+      }
+    },
+    "characters": {
+      "type": "array",
+      "description": "AI-played character cards and the per-character (Tier-2) lorebooks bound to them.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file"],
+        "properties": {
+          "file": { "type": "string", "description": "Filename of the V2/V3 character card JSON." },
+          "name": { "type": "string", "description": "Optional display name (informational; the card's own name wins)." },
+          "lorebook": { "type": "string", "description": "Filename of this character's Tier-2 lorebook, bound to the card on import." },
+          "intimacy": { "type": "string", "description": "Optional conditional intimacy-profile lorebook for this character." },
+          "director": { "type": "boolean", "default": false, "description": "True for the World Director / narrator card (informational; the loader does not treat it specially today)." }
+        }
+      }
+    },
+    "lorebooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lorebooks not bound to a single character. Character/persona books are referenced from their owners above.",
+      "properties": {
+        "world": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tier-1 permanent world lorebooks. Activated globally (always-on)."
+        },
+        "group": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Group-tagged combined lorebooks. Imported and staged for attaching to the group chat once you create it."
+        },
+        "arcs": {
+          "type": "array",
+          "description": "Tier-3 per-arc lorebooks. In 'arc' mode only the default arc is activated; the rest are imported but left inactive.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["n", "file"],
+            "properties": {
+              "n": { "type": "integer", "minimum": 1, "description": "Arc number." },
+              "file": { "type": "string", "description": "Filename of the arc lorebook." },
+              "intimacy": { "type": "string", "description": "Optional conditional intimacy register for this arc." }
+            }
+          }
+        }
+      }
+    },
+    "rpg": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional RPG-engine assets (consumed by rpg-engine-kit). See rpg-engine-kit/schema/WORLD-FORGE-GUIDE.md.",
+      "properties": {
+        "user_profile": { "type": "string", "description": "Filename of the standalone user_rpg_profile JSON (stats.id = 'player')." },
+        "bestiary": { "type": "string", "description": "Filename of the standalone bestiary JSON." }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "active_arc": { "type": "integer", "minimum": 1, "description": "Which arc number to activate on load (arc mode). Defaults to the lowest arc present." }
+      }
+    },
+    "docs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Informational files (compiler logs, audits). Imported nowhere; surfaced in the loader summary so you can read them."
+    }
+  }
+}

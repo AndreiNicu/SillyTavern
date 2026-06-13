@@ -1,0 +1,130 @@
+/*
+ * World Forge — custom CSS (the "custom_css" field of WorldForge.json).
+ *
+ * Edit here, then run `node build.cjs` to regenerate WorldForge.json.
+ * Everything is additive and leans on SillyTavern's own --SmartTheme* variables
+ * so it tracks the palette set in the theme JSON. No layout is rebuilt; only
+ * surfaces, spacing, accents and motion are refined.
+ */
+
+:root {
+    --wf-accent: #8b7bf0;          /* indigo */
+    --wf-accent-2: #5ad1e6;        /* cyan */
+    --wf-glow: rgba(139, 123, 240, 0.35);
+    --wf-glow-2: rgba(90, 209, 230, 0.30);
+    --wf-radius: 14px;
+    --wf-radius-sm: 10px;
+}
+
+/* Smooth, but never fight accessibility settings. */
+#sheld,
+.mes,
+.menu_button,
+.drawer-content,
+#send_form,
+.swipe_left,
+.swipe_right {
+    transition: border-color .18s ease, box-shadow .18s ease,
+        background-color .18s ease, transform .18s ease, opacity .15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+}
+
+/* ---- main chat surface: a soft glass card ---- */
+#sheld {
+    border-radius: var(--wf-radius);
+    border: 1px solid var(--SmartThemeBorderColor);
+    box-shadow: 0 12px 44px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* ---- messages: breathing room, a color-coded edge, gentle hover ---- */
+.mes {
+    border-radius: var(--wf-radius);
+    margin: 6px 8px;
+    border-left: 2px solid transparent;
+}
+.mes[is_user="true"] { border-left-color: var(--wf-accent); }
+.mes[is_user="false"] { border-left-color: var(--wf-accent-2); }
+.mes[is_system="true"] { border-left-color: transparent; opacity: 0.85; }
+.mes:hover { background-color: rgba(255, 255, 255, 0.025); }
+#chat .mes.last_mes {
+    box-shadow: 0 0 0 1px var(--SmartThemeBorderColor),
+        0 8px 26px rgba(0, 0, 0, 0.30);
+}
+
+/* character / persona name: accent gradient, a touch bolder */
+.mes .ch_name .name_text {
+    font-weight: 600;
+    letter-spacing: .2px;
+    background: linear-gradient(90deg, var(--wf-accent), var(--wf-accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+/* avatars: keep ST's shape, add a soft ring + glow */
+.mes .avatar {
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45), 0 0 0 3px var(--wf-glow);
+}
+
+/* quotes catch the eye without shouting */
+.mes_text q {
+    color: var(--SmartThemeQuoteColor);
+    text-shadow: 0 0 12px var(--wf-glow-2);
+}
+
+/* ---- buttons: pill, lift + accent on hover ---- */
+.menu_button {
+    border-radius: var(--wf-radius-sm);
+    border: 1px solid var(--SmartThemeBorderColor);
+}
+.menu_button:hover {
+    border-color: var(--wf-accent);
+    box-shadow: 0 0 0 1px var(--wf-accent), 0 0 14px var(--wf-glow);
+    transform: translateY(-1px);
+}
+
+/* ---- input bar: glassy, accent focus ring ---- */
+#send_form {
+    border-radius: var(--wf-radius);
+    border: 1px solid var(--SmartThemeBorderColor);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.40);
+}
+#send_textarea:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 1px var(--wf-accent), 0 0 18px var(--wf-glow);
+    border-radius: var(--wf-radius-sm);
+}
+#send_but, #mes_stop, #send_but_sheld .fa-solid { color: var(--wf-accent); }
+#send_but:hover { filter: drop-shadow(0 0 8px var(--wf-glow)); }
+
+/* ---- dropdown panels / drawers ---- */
+.drawer-content {
+    border-radius: var(--wf-radius);
+    border: 1px solid var(--SmartThemeBorderColor);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.50);
+}
+#top-settings-holder .drawer-icon:hover {
+    color: var(--wf-accent);
+    text-shadow: 0 0 10px var(--wf-glow);
+}
+
+/* ---- swipe arrows: quiet until you hover the message ---- */
+.swipe_left, .swipe_right { opacity: 0.45; }
+.mes:hover .swipe_left, .mes:hover .swipe_right { opacity: 1; }
+
+/* ---- scrollbars: thin, gradient thumb ---- */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+    background: linear-gradient(var(--wf-accent), var(--wf-accent-2));
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(var(--wf-accent-2), var(--wf-accent));
+    background-clip: padding-box;
+}

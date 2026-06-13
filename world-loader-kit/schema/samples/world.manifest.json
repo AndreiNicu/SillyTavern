@@ -1,0 +1,48 @@
+{
+  "kind": "world_manifest",
+  "schema_version": "1.0.0",
+  "world": {
+    "id": "lucifer",
+    "name": "Lucifer",
+    "mode": "arc",
+    "description": "A four-arc narrative world. Play Andrei opposite Anna, with the World Director framing scenes."
+  },
+  "preset": "Lucifer-Lucifer_ChatPreset.json",
+  "persona": {
+    "name": "Andrei",
+    "description_file": "Lucifer-User.md",
+    "lorebook": "Lucifer-Andrei_Lorebook.json"
+  },
+  "characters": [
+    {
+      "file": "Anna_Card.json",
+      "name": "Anna",
+      "lorebook": "Lucifer-Anna_Lorebook.json",
+      "intimacy": "Lucifer-Anna_Intimacy_Profile.json"
+    },
+    {
+      "file": "WorldDirector_Card.json",
+      "name": "World Director",
+      "lorebook": "Lucifer-WorldDirector_Lorebook.json",
+      "director": true
+    }
+  ],
+  "lorebooks": {
+    "world": ["Lucifer-World_Lorebook.json"],
+    "group": ["Lucifer-Group_Lorebook.json"],
+    "arcs": [
+      { "n": 1, "file": "Lucifer-Arc1_Lorebook.json", "intimacy": "Lucifer-Arc1_Intimacy_Register.json" },
+      { "n": 2, "file": "Lucifer-Arc2_Lorebook.json", "intimacy": "Lucifer-Arc2_Intimacy_Register.json" },
+      { "n": 3, "file": "Lucifer-Arc3_Lorebook.json", "intimacy": "Lucifer-Arc3_Intimacy_Register.json" },
+      { "n": 4, "file": "Lucifer-Arc4_Lorebook.json", "intimacy": "Lucifer-Arc4_Intimacy_Register.json" }
+    ]
+  },
+  "rpg": {
+    "user_profile": "Lucifer-User_RPG.json",
+    "bestiary": "Lucifer-Bestiary.json"
+  },
+  "defaults": {
+    "active_arc": 1
+  },
+  "docs": ["Lucifer-Compiler_Log.md", "Lucifer-Prompt_Engineer_Audit.md"]
+}

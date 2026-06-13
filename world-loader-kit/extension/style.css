@@ -1,0 +1,52 @@
+.world-loader-settings .wl-controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.world-loader-settings #wl_file {
+    flex: 1;
+    min-width: 0;
+}
+
+.world-loader-settings .wl-box {
+    margin-top: 8px;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-radius: 6px;
+    background: var(--black30a, rgba(0, 0, 0, 0.2));
+    font-size: 0.9em;
+}
+
+.world-loader-settings .wl-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.world-loader-settings .wl-table td {
+    vertical-align: top;
+    padding: 2px 0;
+}
+
+.world-loader-settings .wl-warn {
+    margin-top: 8px;
+    color: var(--warning, #e0a030);
+}
+
+.world-loader-settings .wl-warn ul,
+.world-loader-settings .wl-launch {
+    margin: 4px 0 0 0;
+}
+
+.world-loader-settings .wl-ok {
+    color: var(--success, #6cc070);
+    margin-bottom: 4px;
+}
+
+.world-loader-settings .wl-launch {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-left: 3px solid var(--SmartThemeQuoteColor, #6cf);
+    background: var(--black30a, rgba(0, 0, 0, 0.15));
+}

@@ -1,0 +1,7 @@
+{
+    "name": "sillytavern-world-loader",
+    "version": "0.1.0",
+    "description": "Inspects a World-Forge export zip and returns a load plan (cards, lorebooks, preset, persona, RPG).",
+    "type": "commonjs",
+    "main": "index.js"
+}

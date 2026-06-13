@@ -647,7 +647,11 @@ function buildSceneBlock(scene) {
             if (npcs.length) {
                 const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
                 if (speakerIsDirector) {
-                    lines.push(`${listNames(npcs)} ${are} for you to voice.`);
+                    if (npcs.length > 1) {
+                        lines.push(`${listNames(npcs)} are NPCs for you to voice. All of them are present in the scene — give each of them their own voice and presence in your reply; don't focus on just one and let the others fade out.`);
+                    } else {
+                        lines.push(`${npcs[0].name} is an NPC for you to voice.`);
+                    }
                 } else if (director) {
                     lines.push(`${listNames(npcs)} ${are} played by ${director}, the World Director. Do not write dialogue or make decisions for ${npcs.length > 1 ? 'them' : npcs[0].name}.`);
                 } else {
@@ -659,6 +663,9 @@ function buildSceneBlock(scene) {
             if (npcs.length) {
                 const are = npcs.length > 1 ? 'are NPCs' : 'is an NPC';
                 lines.push(`${listNames(npcs)} ${are} ${cast.length ? 'also ' : ''}played by you, acting as the World Director.`);
+                if (npcs.length > 1) {
+                    lines.push('All of them are present in the scene — give each of them their own voice and presence in your reply; don\'t focus on just one and let the others fade out.');
+                }
             }
         }
 

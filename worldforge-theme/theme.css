@@ -5,6 +5,12 @@
  * Everything is additive and leans on SillyTavern's own --SmartTheme* variables
  * so it tracks the palette set in the theme JSON. No layout is rebuilt; only
  * surfaces, spacing, accents and motion are refined.
+ *
+ * Sections:
+ *   1. base        — surfaces/accents that apply everywhere
+ *   2. hover only  — decorative lift/glow, gated to devices with a real pointer
+ *                    so it never "sticks" after a tap on touchscreens
+ *   3. mobile      — lighter shadows/blur + tighter spacing for phones/tablets
  */
 
 :root {
@@ -31,7 +37,9 @@
     * { transition: none !important; animation: none !important; }
 }
 
-/* ---- main chat surface: a soft glass card ---- */
+/* ============================ 1. base ============================ */
+
+/* main chat surface: a soft glass card */
 #sheld {
     border-radius: var(--wf-radius);
     border: 1px solid var(--SmartThemeBorderColor);
@@ -39,7 +47,7 @@
         inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-/* ---- messages: breathing room, a color-coded edge, gentle hover ---- */
+/* messages: breathing room, a color-coded edge */
 .mes {
     border-radius: var(--wf-radius);
     margin: 6px 8px;
@@ -48,7 +56,6 @@
 .mes[is_user="true"] { border-left-color: var(--wf-accent); }
 .mes[is_user="false"] { border-left-color: var(--wf-accent-2); }
 .mes[is_system="true"] { border-left-color: transparent; opacity: 0.85; }
-.mes:hover { background-color: rgba(255, 255, 255, 0.025); }
 #chat .mes.last_mes {
     box-shadow: 0 0 0 1px var(--SmartThemeBorderColor),
         0 8px 26px rgba(0, 0, 0, 0.30);
@@ -75,18 +82,13 @@
     text-shadow: 0 0 12px var(--wf-glow-2);
 }
 
-/* ---- buttons: pill, lift + accent on hover ---- */
+/* buttons: pill base */
 .menu_button {
     border-radius: var(--wf-radius-sm);
     border: 1px solid var(--SmartThemeBorderColor);
 }
-.menu_button:hover {
-    border-color: var(--wf-accent);
-    box-shadow: 0 0 0 1px var(--wf-accent), 0 0 14px var(--wf-glow);
-    transform: translateY(-1px);
-}
 
-/* ---- input bar: glassy, accent focus ring ---- */
+/* input bar: glassy */
 #send_form {
     border-radius: var(--wf-radius);
     border: 1px solid var(--SmartThemeBorderColor);
@@ -98,24 +100,18 @@
     border-radius: var(--wf-radius-sm);
 }
 #send_but, #mes_stop, #send_but_sheld .fa-solid { color: var(--wf-accent); }
-#send_but:hover { filter: drop-shadow(0 0 8px var(--wf-glow)); }
 
-/* ---- dropdown panels / drawers ---- */
+/* dropdown panels / drawers */
 .drawer-content {
     border-radius: var(--wf-radius);
     border: 1px solid var(--SmartThemeBorderColor);
     box-shadow: 0 14px 44px rgba(0, 0, 0, 0.50);
 }
-#top-settings-holder .drawer-icon:hover {
-    color: var(--wf-accent);
-    text-shadow: 0 0 10px var(--wf-glow);
-}
 
-/* ---- swipe arrows: quiet until you hover the message ---- */
+/* swipe arrows: quiet by default (revealed on hover or on touch — see below) */
 .swipe_left, .swipe_right { opacity: 0.45; }
-.mes:hover .swipe_left, .mes:hover .swipe_right { opacity: 1; }
 
-/* ---- scrollbars: thin, gradient thumb ---- */
+/* scrollbars: thin, gradient thumb (desktop pointers; ignored on touch) */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
@@ -124,7 +120,63 @@
     border: 2px solid transparent;
     background-clip: padding-box;
 }
-*::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(var(--wf-accent-2), var(--wf-accent));
-    background-clip: padding-box;
+
+/* ====================== 2. hover only (pointer devices) ====================== */
+/* Gated so taps on touchscreens don't leave elements stuck in :hover state. */
+@media (hover: hover) and (pointer: fine) {
+    .mes:hover { background-color: rgba(255, 255, 255, 0.025); }
+    .mes:hover .swipe_left, .mes:hover .swipe_right { opacity: 1; }
+
+    .menu_button:hover {
+        border-color: var(--wf-accent);
+        box-shadow: 0 0 0 1px var(--wf-accent), 0 0 14px var(--wf-glow);
+        transform: translateY(-1px);
+    }
+    #send_but:hover { filter: drop-shadow(0 0 8px var(--wf-glow)); }
+    #top-settings-holder .drawer-icon:hover {
+        color: var(--wf-accent);
+        text-shadow: 0 0 10px var(--wf-glow);
+    }
+    *::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(var(--wf-accent-2), var(--wf-accent));
+        background-clip: padding-box;
+    }
+}
+
+/* ============================ 3. mobile ============================ */
+/* SillyTavern's primary mobile breakpoint. Lighten GPU-heavy effects and
+   reclaim horizontal space on small screens. */
+@media screen and (max-width: 1000px) {
+    :root {
+        --wf-radius: 10px;
+        --wf-radius-sm: 8px;
+        /* Halve backdrop blur on mobile for smoother scrolling. */
+        --SmartThemeBlurStrength: 4px;
+    }
+
+    /* Full-bleed chat panel; the big card shadow/radius reads as clutter on a phone. */
+    #sheld {
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        box-shadow: none;
+    }
+
+    /* Tighter messages, a slightly bolder edge so it stays legible when narrow. */
+    .mes {
+        margin: 4px 4px;
+        border-left-width: 3px;
+    }
+    #chat .mes.last_mes { box-shadow: none; }
+
+    /* Drop the colored avatar glow ring (keep a plain outline) — cheaper to paint. */
+    .mes .avatar { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.40); }
+    .mes_text q { text-shadow: none; }
+
+    /* Swipe arrows are primary navigation on touch: keep them visible. */
+    .swipe_left, .swipe_right { opacity: 0.8; }
+
+    /* Lighter input/drawer shadows. */
+    #send_form { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
+    .drawer-content { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 }

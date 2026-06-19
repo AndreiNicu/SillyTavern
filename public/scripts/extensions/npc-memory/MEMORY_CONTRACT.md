@@ -22,7 +22,8 @@ specific piece of guesswork. Nothing here is mandatory for a chat to work.
 - The consumer reads `schema` first. If it is **greater** than the version it
   understands, it consumes the fields it recognizes and ignores the rest (forward
   compatible). If **lower**, it applies the documented migration for that version.
-- Producers MUST set `schema` on every manifest and every turn tag.
+- Producers MUST set `schema` on every manifest. Whoever emits a turn tag
+  (consumer-injected, model, or producer-baked — §7) MUST set its `v`.
 - Unknown fields MUST be ignored, never error. Do not repurpose field names across
   versions; add new names instead.
 
@@ -191,9 +192,31 @@ These map directly to the per-NPC `lastWithUser` / `lastAlone` memory slots.
 
 ## 7. Turn tag (the per-message machine tag)
 
-The optional lever: the message-producing card (World Director / character)
-appends a hidden, machine-readable tag to **each message it generates**, giving
-the consumer ground truth instead of alias inference.
+A hidden, machine-readable tag appended as the last line of a generated message,
+giving the consumer ground truth (who acted, whether {{user}} was involved, the
+current scene) instead of alias inference.
+
+**This lever is consumer-owned.** The consumer drives the whole loop and does not
+depend on the producer:
+
+1. The consumer **injects the emit-instruction** into the prompt (it already
+   injects per-NPC memory, and it holds the manifest `id`s and current scene
+   candidates). The instruction tells the model to end its message with a
+   `npcmem` tag using that authoritative `id` vocabulary.
+2. The **model** fills in the one thing the consumer cannot reliably derive: the
+   per-turn judgment of who *acted* (vs. was merely present) and whether {{user}}
+   participated.
+3. The consumer **parses, strips, and stores** the result (§7.3), and
+   **synthesizes a fallback tag** (marked `"src":"inferred"`) when none is present.
+
+Because the consumer injects the instruction, the lever works on **any** card.
+A producer (e.g. World-Forge) MAY additionally bake tag emission into its cards
+as redundancy, but this is **optional** and not required for the lever to function.
+Producer-baked and consumer-injected tags share the identical format below.
+
+> Note: do not let the consumer author the tag *content* from its own alias
+> inference and then read it back as authoritative — that is circular and adds no
+> information. Consumer-authored tags are only the explicit `inferred` fallback.
 
 ### 7.1 Format
 
@@ -218,10 +241,12 @@ A single-line HTML comment, placed as the **last line** of the message:
 | `withUser` | bool | rec. | Whether {{user}} participated this turn. |
 | `scene` | string | no | Current `scenes[].id`. Drives scene-boundary detection (§9). |
 | `location` | string | no | Free-form locale label, stored on the event. |
+| `src` | string | no | Tag origin: `model` (emitted per the injected instruction), `card` (producer-baked), or `inferred` (consumer fallback). Absent ⇒ treat as `model`. |
 
-`actors`/`present` MUST use manifest `id`s. If the producer cannot resolve an id,
-it MAY emit a `displayName` string instead; the consumer resolves it via aliases
-and logs if unmatched.
+`actors`/`present` MUST use manifest `id`s. If an id cannot be resolved, a
+`displayName` string MAY be emitted instead; the consumer resolves it via aliases
+and logs if unmatched. The consumer treats `inferred`-source tags as
+lower-confidence: a later `model`/`card` tag for the same message supersedes them.
 
 ### 7.3 Consumer handling
 
@@ -232,8 +257,9 @@ and logs if unmatched.
    the producer does not need to manage stripping.
 3. **Record** `actors`, `withUser`, `scene`, `location` as the authoritative event
    metadata, overriding any alias-based inference for that message.
-4. If the tag is **absent or malformed**, fall back to §5/§6 inference. A malformed
-   tag is logged and treated as absent — never fatal.
+4. If the tag is **absent or malformed**, run §5/§6 inference and **synthesize**
+   a tag from the result tagged `"src":"inferred"`, so downstream storage is
+   uniform. A malformed tag is logged and treated as absent — never fatal.
 
 ### 7.4 Display
 
@@ -371,13 +397,14 @@ Consumer result: records an event for `anna_larsson`, `withUser:true`, scene
 - [ ] Facet maps point at correct `uid`s; durable vs. volatile facets typed.
 - [ ] Persona block populated with player name + aliases.
 - [ ] (If using scenes) scene registry with stable ids + `seq`.
-- [ ] (If using the lever) each generated message ends with a valid `npcmem` tag
-      using manifest ids.
+- [ ] (Optional redundancy) cards MAY bake `npcmem` emission using manifest ids;
+      not required — the turn tag is consumer-owned (§7).
 
 **Consumer (npc-memory extension)**
 
 - [ ] Reads manifest by marker; tolerates absence (full prose fallback).
 - [ ] Ignores unknown fields and higher `schema`; never errors on bad data.
 - [ ] Keys all stored memory by `id`, never `uid`.
-- [ ] Parses + strips turn tags; falls back to alias inference when absent.
+- [ ] Injects the turn-tag emit-instruction (manifest ids + scene candidates).
+- [ ] Parses + strips turn tags; synthesizes an `inferred` tag when absent.
 - [ ] Derives the same slug ids in fallback as the manifest would, for alignment.

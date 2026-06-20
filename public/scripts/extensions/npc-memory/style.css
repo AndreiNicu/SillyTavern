@@ -1,0 +1,8 @@
+.npc-memory-settings #npcmem_status {
+    opacity: 0.85;
+    line-height: 1.5;
+}
+
+.npc-memory-settings #npcmem_depth {
+    max-width: 6em;
+}

@@ -1,0 +1,38 @@
+<div class="npc-memory-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>NPC Memory</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <small>
+                Reads a World-Forge NPC manifest (or falls back to lorebook prose),
+                tracks which NPCs are present each turn, and injects their memory.
+            </small>
+
+            <label class="checkbox_label" for="npcmem_enabled">
+                <input id="npcmem_enabled" type="checkbox">
+                <span>Enabled</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_announce">
+                <input id="npcmem_announce" type="checkbox">
+                <span>Announce present NPCs in the prompt</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_relationships">
+                <input id="npcmem_relationships" type="checkbox">
+                <span>Include relationship hints for co-present NPCs</span>
+            </label>
+
+            <label for="npcmem_depth">Injection depth</label>
+            <input id="npcmem_depth" type="number" class="text_pole widthUnset" min="0" max="100" step="1">
+
+            <div class="flex-container alignItemsCenter marginTop5">
+                <div id="npcmem_refresh" class="menu_button">Reload manifest</div>
+            </div>
+
+            <hr class="m-t-1 m-b-1">
+            <div><small><b>Status</b></small></div>
+            <div id="npcmem_status"><small>Not loaded.</small></div>
+        </div>
+    </div>
+</div>

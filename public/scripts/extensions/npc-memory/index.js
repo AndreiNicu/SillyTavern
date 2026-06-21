@@ -18,9 +18,10 @@ import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 
 import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
-import { ensureRecord, save as saveStore, allRecords, getRecord } from './store.js';
+import { ensureRecord, save as saveStore, allRecords, getRecord, bumpPending, resetPending, pendingCount } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
 import { captureFromMessage } from './capture.js';
+import { runBatchSummary } from './summarize.js';
 import { setVerbose, dlog, setIndex, setLastTurn, setLastCapture, renderStatus, renderReport, renderReportText } from './debug.js';
 
 const MODULE_NAME = 'npc-memory';
@@ -38,6 +39,10 @@ const defaultSettings = {
     // Turn-tag loop (contract §7).
     emitTag: true,
     stripTags: true,
+    // Batched summarization (contract §9).
+    summarize: true,
+    summarizeEvery: 4,
+    summaryTokens: 120,
     // Debug.
     debugLog: false,
 };
@@ -115,6 +120,19 @@ async function onCharacterMessage(messageId) {
         const result = captureFromMessage(messageId, index, settings(), getContext());
         if (result) setLastCapture(result);
         saveStore();
+
+        // Batched summarization: every N captured messages, fold pending events
+        // into real per-NPC recaps (contract §9).
+        if (settings().summarize && result) {
+            const n = bumpPending();
+            const every = Number(settings().summarizeEvery) > 0 ? Number(settings().summarizeEvery) : 4;
+            if (n >= every) {
+                resetPending();
+                const personaName = getContext()?.name1 || index.personas?.user?.name || '';
+                await runBatchSummary(getContext(), settings(), personaName);
+                saveStore();
+            }
+        }
         updateStatusUI();
     } catch (err) {
         console.warn(`${LOG} capture failed for message ${messageId}.`, err);
@@ -153,8 +171,13 @@ async function addSettingsPanel() {
     bindCheckbox('#npcmem_striptags', 'stripTags');
     bindCheckbox('#npcmem_debug', 'debugLog', (on) => setVerbose(on));
 
+    bindCheckbox('#npcmem_summarize', 'summarize');
     $('#npcmem_depth').val(s.depth).on('input', function () {
         s.depth = Number($(this).val());
+        saveSettingsDebounced();
+    });
+    $('#npcmem_every').val(s.summarizeEvery).on('input', function () {
+        s.summarizeEvery = Math.max(1, Number($(this).val()) || 1);
         saveSettingsDebounced();
     });
     $('#npcmem_refresh').on('click', () => refreshIndex());
@@ -166,7 +189,12 @@ async function addSettingsPanel() {
 function updateStatusUI() {
     const el = $('#npcmem_status');
     if (el.length === 0) return;
-    el.html(renderStatus(allRecords()));
+    let html = renderStatus(allRecords());
+    if (settings().summarize) {
+        const every = Number(settings().summarizeEvery) > 0 ? Number(settings().summarizeEvery) : 4;
+        html += `<br><small>Summary batch: <b>${pendingCount()}/${every}</b> messages</small>`;
+    }
+    el.html(html);
 }
 
 /* ------------------------------ inspector ------------------------------- */

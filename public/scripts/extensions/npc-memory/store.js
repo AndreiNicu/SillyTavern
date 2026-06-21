@@ -96,23 +96,43 @@ export async function saveNow() {
 
 /** Max events retained per NPC (oldest dropped beyond this). */
 const MAX_EVENTS = 50;
-/** Max characters kept in a slot summary snippet. */
+/** Max characters kept in a slot summary snippet (placeholder display). */
 const SUMMARY_LEN = 220;
+/** Max characters of cleaned prose retained per event (summarizer input). */
+const EVENT_TEXT_LEN = 600;
 
 /**
- * Condense message prose into a short, single-line slot summary: drop turn
- * tags' residue, markdown emphasis and quotes, collapse whitespace, truncate.
+ * Condense message prose into a single line: drop markdown emphasis and quotes,
+ * collapse whitespace, truncate to `len`.
  * @param {string} text
+ * @param {number} [len]
  * @returns {string}
  */
-export function snippet(text) {
+export function snippet(text, len = SUMMARY_LEN) {
     let s = String(text ?? '')
         .replace(/[*_`>#~]/g, ' ')
         .replace(/["'""'']/g, '')
         .replace(/\s+/g, ' ')
         .trim();
-    if (s.length > SUMMARY_LEN) s = s.slice(0, SUMMARY_LEN - 1).trimEnd() + '…';
+    if (s.length > len) s = s.slice(0, len - 1).trimEnd() + '…';
     return s;
+}
+
+/** Records with at least one event not yet folded into an LLM summary. */
+export function pendingCount() {
+    return root().pending || 0;
+}
+
+/** Increment the captured-message counter; returns the new value. */
+export function bumpPending() {
+    const s = root();
+    s.pending = (s.pending || 0) + 1;
+    return s.pending;
+}
+
+/** Reset the captured-message counter (after a summary batch runs). */
+export function resetPending() {
+    root().pending = 0;
 }
 
 /**
@@ -127,7 +147,6 @@ export function snippet(text) {
 export function recordEvent(id, ev, meta = {}) {
     const rec = ensureRecord(id, meta);
     const ts = ev.ts ?? Date.now();
-    const summary = snippet(ev.text);
 
     const event = {
         ts,
@@ -135,14 +154,21 @@ export function recordEvent(id, ev, meta = {}) {
         scene: ev.scene ?? null,
         location: ev.location ?? '',
         source: ev.source ?? 'model',
-        summary,
+        text: snippet(ev.text, EVENT_TEXT_LEN),
+        summarized: false,
     };
     rec.events.push(event);
     if (rec.events.length > MAX_EVENTS) rec.events.splice(0, rec.events.length - MAX_EVENTS);
 
-    const slot = { ts, summary, scene: event.scene, location: event.location, source: event.source };
-    if (event.withUser) rec.slots.lastWithUser = slot;
-    else rec.slots.lastAlone = slot;
+    // Placeholder slot from the raw snippet; an LLM batch summary (summarize.js)
+    // overwrites this with a real recap and sets kind: 'llm'.
+    const slot = { ts, summary: snippet(ev.text), scene: event.scene, location: event.location, source: event.source, kind: 'snippet' };
+    if (rec.slots[event.withUser ? 'lastWithUser' : 'lastAlone']?.kind !== 'llm') {
+        rec.slots[event.withUser ? 'lastWithUser' : 'lastAlone'] = slot;
+    } else {
+        // Keep the LLM summary; just refresh the timestamp until next batch.
+        rec.slots[event.withUser ? 'lastWithUser' : 'lastAlone'].ts = ts;
+    }
 
     rec.updatedAt = ts;
     return rec;

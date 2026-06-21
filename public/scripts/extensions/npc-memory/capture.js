@@ -56,13 +56,14 @@ export function captureFromMessage(messageId, index, settings, ctx) {
     }
 
     const ts = Date.parse(message.send_date) || Date.now();
+    const prose = stripTags(text); // memory stores clean prose, never the tag
     for (const id of actors) {
         recordEvent(id, {
             ts,
             withUser: !!tag.withUser,
             scene: tag.scene,
             location: tag.location,
-            text,
+            text: prose,
             source: tag.src,
         }, { displayName: index.byId.get(id)?.displayName });
     }

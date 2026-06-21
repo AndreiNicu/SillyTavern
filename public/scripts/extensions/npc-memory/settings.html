@@ -31,6 +31,10 @@
                 <input id="npcmem_striptags" type="checkbox">
                 <span>Strip turn tags from stored messages</span>
             </label>
+            <label class="checkbox_label" for="npcmem_summarize">
+                <input id="npcmem_summarize" type="checkbox">
+                <span>Summarize memories with the LLM (batched)</span>
+            </label>
             <label class="checkbox_label" for="npcmem_debug">
                 <input id="npcmem_debug" type="checkbox">
                 <span>Verbose debug logging (console)</span>
@@ -38,6 +42,9 @@
 
             <label for="npcmem_depth">Injection depth</label>
             <input id="npcmem_depth" type="number" class="text_pole widthUnset" min="0" max="100" step="1">
+
+            <label for="npcmem_every">Summarize every N messages</label>
+            <input id="npcmem_every" type="number" class="text_pole widthUnset" min="1" max="50" step="1">
 
             <div class="flex-container alignItemsCenter marginTop5">
                 <div id="npcmem_refresh" class="menu_button">Reload manifest</div>

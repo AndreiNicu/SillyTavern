@@ -48,9 +48,12 @@ const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': 
 /** Render an NPC's remembered slots into a table cell. */
 function memoryCell(rec) {
     if (!rec) return '<span style="opacity:.5">—</span>';
-    const out = [];
-    if (rec.slots?.lastWithUser?.summary) out.push(`<b>with you:</b> ${esc(rec.slots.lastWithUser.summary)}`);
-    if (rec.slots?.lastAlone?.summary) out.push(`<b>alone:</b> ${esc(rec.slots.lastAlone.summary)}`);
+    const line = (label, slot) => {
+        if (!slot?.summary) return '';
+        const raw = slot.kind === 'snippet' ? ' <span style="opacity:.5">(raw)</span>' : '';
+        return `<b>${label}:</b> ${esc(slot.summary)}${raw}`;
+    };
+    const out = [line('with you', rec.slots?.lastWithUser), line('alone', rec.slots?.lastAlone)].filter(Boolean);
     return out.length ? out.join('<br>') : '<span style="opacity:.5">(no events yet)</span>';
 }
 

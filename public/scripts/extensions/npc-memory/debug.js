@@ -60,12 +60,12 @@ export function renderStatus(store) {
 
     const t = state.lastTurn;
     if (t) {
-        const resolved = t.mapping.filter(m => m.kind !== 'unresolved').length;
+        const resolved = t.mapping.filter(m => m.kind === 'npc' || m.kind === 'scene').length;
+        const unresolved = t.mapping.filter(m => m.kind === 'unresolved').length;
         const present = t.npcIds.map(id => esc(idx.byId.get(id)?.displayName ?? id)).join(', ') || '—';
         html += `<br>Last turn: <b>${resolved}/${t.mapping.length}</b> activations resolved`;
         html += `<br>Present: <b>${present}</b>`;
         if (t.sceneId) html += `<br>Scene: <b>${esc(t.sceneId)}</b>`;
-        const unresolved = t.mapping.length - resolved;
         if (unresolved > 0) html += `<br><span style="color:var(--warning,#e0a800)">⚠ ${unresolved} activation(s) unresolved</span>`;
     }
     return html;
@@ -88,7 +88,24 @@ export function renderReport(store, settings) {
         parts.push('<p><em>Index not loaded. Open a chat or click “Reload manifest”.</em></p>');
         return parts.join('\n');
     }
-    parts.push('<h4>Source books</h4>');
+    // Every loaded book — so you can see whether the expected lorebooks (and
+    // their manifests) are actually loaded at index-build time.
+    parts.push('<h4>Loaded books</h4>');
+    if (idx.books?.length) {
+        const rows = idx.books.map(b => {
+            const tag = b.mode === 'manifest' ? '<b>manifest</b>'
+                : b.mode === 'prose' ? 'prose'
+                    : '<span style="opacity:.6">no NPCs</span>';
+            return `<tr><td><b>${esc(b.world || '(unnamed)')}</b></td><td>${b.entries}</td><td>${tag}</td><td>${b.npcCount || ''}</td></tr>`;
+        }).join('');
+        parts.push('<table style="width:100%;border-collapse:collapse" class="npcmem-table">' +
+            '<thead><tr><th>book</th><th>entries</th><th>source</th><th>npcs</th></tr></thead>' +
+            `<tbody>${rows}</tbody></table>`);
+    } else {
+        parts.push('<p><em>No world info loaded.</em></p>');
+    }
+
+    parts.push('<h4>Manifests</h4>');
     if (idx.manifests.length) {
         parts.push('<ul>' + idx.manifests.map(m =>
             `<li><b>${esc(m.world || '(unnamed)')}</b> — schema ${m.schema}, npcs: ${m.npcIds.map(esc).join(', ') || '—'}</li>`,
@@ -132,13 +149,21 @@ export function renderReport(store, settings) {
     } else {
         const when = new Date(t.at).toLocaleTimeString();
         const rows = t.mapping.map(m => {
-            const res = m.kind === 'unresolved'
-                ? '<span style="color:var(--warning,#e0a800)">unresolved</span>'
-                : `${esc(m.kind)} → <b>${esc(m.id)}</b> <small>(${esc(m.via)})</small>`;
+            let res;
+            if (m.kind === 'unresolved') {
+                res = '<span style="color:var(--warning,#e0a800)">unresolved</span>';
+            } else if (m.kind === 'ignored') {
+                res = '<span style="opacity:.6">ignored (non-NPC lore)</span>';
+            } else {
+                res = `${esc(m.kind)} → <b>${esc(m.id)}</b> <small>(${esc(m.via)})</small>`;
+            }
             return `<tr><td><small>${esc(m.world)}</small></td><td>${esc(m.uid)}</td><td><small>${esc(m.comment)}</small></td><td>${res}</td></tr>`;
         }).join('');
+        const ignored = t.mapping.filter(m => m.kind === 'ignored').length;
+        const unresolved = t.mapping.filter(m => m.kind === 'unresolved').length;
         parts.push(`<p><small>at ${esc(when)} · present: <b>${t.npcIds.map(esc).join(', ') || '—'}</b>` +
-            `${t.sceneId ? ` · scene: <b>${esc(t.sceneId)}</b>` : ''}</small></p>`);
+            `${t.sceneId ? ` · scene: <b>${esc(t.sceneId)}</b>` : ''}` +
+            ` · ignored: ${ignored} · unresolved: ${unresolved}</small></p>`);
         parts.push('<table style="width:100%;border-collapse:collapse" class="npcmem-table">' +
             '<thead><tr><th>book</th><th>uid</th><th>comment</th><th>resolved</th></tr></thead>' +
             `<tbody>${rows}</tbody></table>`);

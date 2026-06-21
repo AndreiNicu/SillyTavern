@@ -93,3 +93,57 @@ export function save() {
 export async function saveNow() {
     await saveMetadata();
 }
+
+/** Max events retained per NPC (oldest dropped beyond this). */
+const MAX_EVENTS = 50;
+/** Max characters kept in a slot summary snippet. */
+const SUMMARY_LEN = 220;
+
+/**
+ * Condense message prose into a short, single-line slot summary: drop turn
+ * tags' residue, markdown emphasis and quotes, collapse whitespace, truncate.
+ * @param {string} text
+ * @returns {string}
+ */
+export function snippet(text) {
+    let s = String(text ?? '')
+        .replace(/[*_`>#~]/g, ' ')
+        .replace(/["'""'']/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (s.length > SUMMARY_LEN) s = s.slice(0, SUMMARY_LEN - 1).trimEnd() + '…';
+    return s;
+}
+
+/**
+ * Record a captured event against an NPC and update its memory slot
+ * (contract §6: withUser -> lastWithUser, else lastAlone).
+ *
+ * @param {string} id            NPC stable id.
+ * @param {object} ev            { withUser, scene, location, text, source, ts }.
+ * @param {{ displayName?: string }} [meta]
+ * @returns {NpcRecord}
+ */
+export function recordEvent(id, ev, meta = {}) {
+    const rec = ensureRecord(id, meta);
+    const ts = ev.ts ?? Date.now();
+    const summary = snippet(ev.text);
+
+    const event = {
+        ts,
+        withUser: !!ev.withUser,
+        scene: ev.scene ?? null,
+        location: ev.location ?? '',
+        source: ev.source ?? 'model',
+        summary,
+    };
+    rec.events.push(event);
+    if (rec.events.length > MAX_EVENTS) rec.events.splice(0, rec.events.length - MAX_EVENTS);
+
+    const slot = { ts, summary, scene: event.scene, location: event.location, source: event.source };
+    if (event.withUser) rec.slots.lastWithUser = slot;
+    else rec.slots.lastAlone = slot;
+
+    rec.updatedAt = ts;
+    return rec;
+}

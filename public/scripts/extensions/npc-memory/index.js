@@ -20,7 +20,8 @@ import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
 import { ensureRecord, save as saveStore, allRecords, getRecord } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
-import { setVerbose, dlog, setIndex, setLastTurn, renderStatus, renderReport, renderReportText } from './debug.js';
+import { captureFromMessage } from './capture.js';
+import { setVerbose, dlog, setIndex, setLastTurn, setLastCapture, renderStatus, renderReport, renderReportText } from './debug.js';
 
 const MODULE_NAME = 'npc-memory';
 const LOG = '[npc-memory]';
@@ -34,6 +35,9 @@ const defaultSettings = {
     // Content toggles.
     relationshipHints: true,
     announcePresence: true,
+    // Turn-tag loop (contract §7).
+    emitTag: true,
+    stripTags: true,
     // Debug.
     debugLog: false,
 };
@@ -83,7 +87,8 @@ async function onWorldInfoActivated(activatedEntries) {
             ensureRecord(id, { displayName: index.byId.get(id)?.displayName });
         }
         saveStore();
-        injected = buildInjectionText(presence.npcIds, index, settings(), getRecord);
+        const personaName = getContext()?.name1 || index.personas?.user?.name || '';
+        injected = buildInjectionText(presence.npcIds, index, settings(), getRecord, { sceneId: presence.sceneId, personaName });
         await applyInjection(injected, settings());
     } else {
         await clearInjection();
@@ -96,6 +101,24 @@ async function onWorldInfoActivated(activatedEntries) {
         injected,
     });
     updateStatusUI();
+}
+
+/**
+ * CHARACTER_MESSAGE_RENDERED handler: capture the turn tag (or infer one) from
+ * the finalized character message into the per-NPC store, and strip the tag.
+ * @param {number} messageId
+ */
+async function onCharacterMessage(messageId) {
+    if (!settings().enabled) return;
+    if (!index) await refreshIndex();
+    try {
+        const result = captureFromMessage(messageId, index, settings(), getContext());
+        if (result) setLastCapture(result);
+        saveStore();
+        updateStatusUI();
+    } catch (err) {
+        console.warn(`${LOG} capture failed for message ${messageId}.`, err);
+    }
 }
 
 async function onChatChanged() {
@@ -126,6 +149,8 @@ async function addSettingsPanel() {
     bindCheckbox('#npcmem_enabled', 'enabled', (on) => { if (!on) clearInjection(); });
     bindCheckbox('#npcmem_announce', 'announcePresence');
     bindCheckbox('#npcmem_relationships', 'relationshipHints');
+    bindCheckbox('#npcmem_emittag', 'emitTag');
+    bindCheckbox('#npcmem_striptags', 'stripTags');
     bindCheckbox('#npcmem_debug', 'debugLog', (on) => setVerbose(on));
 
     $('#npcmem_depth').val(s.depth).on('input', function () {
@@ -184,6 +209,8 @@ export async function init() {
 
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.WORLD_INFO_ACTIVATED, onWorldInfoActivated);
+    // makeLast so the message is fully finalized/rendered before we capture.
+    eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessage);
 
     // Initial load if a chat is already open.
     if (getContext()?.getCurrentChatId?.()) await refreshIndex();

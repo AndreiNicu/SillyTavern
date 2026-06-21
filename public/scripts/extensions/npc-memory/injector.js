@@ -14,6 +14,8 @@
  * populate them.
  */
 
+import { buildEmitInstruction } from './turntag.js';
+
 /** Unique key for this extension's prompt injection. */
 export const INJECT_KEY = 'npc_memory';
 
@@ -25,16 +27,17 @@ export const INJECT_KEY = 'npc_memory';
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {object} settings
  * @param {(id:string)=>(object|undefined)} [getRecord]  Store accessor.
+ * @param {{ sceneId?: string|null, personaName?: string }} [extra]
  * @returns {string}
  */
-export function buildInjectionText(npcIds, index, settings, getRecord = () => undefined) {
+export function buildInjectionText(npcIds, index, settings, getRecord = () => undefined, extra = {}) {
     if (!Array.isArray(npcIds) || npcIds.length === 0) return '';
 
     const cap = Number(settings.maxNpcs) > 0 ? Number(settings.maxNpcs) : npcIds.length;
     const present = npcIds.slice(0, cap);
     const lines = [];
 
-    // Per-NPC memory lines (slots/events populated by later phases).
+    // Per-NPC remembered memory (slots populated by capture, contract §6).
     for (const id of present) {
         const meta = index.byId.get(id);
         const name = meta?.displayName ?? id;
@@ -53,8 +56,18 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
         if (names.length) lines.unshift(`Present: ${names.join(', ')}.`);
     }
 
-    if (lines.length === 0) return '';
-    return `[NPC Memory]\n${lines.join('\n')}`;
+    let block = lines.length ? `[NPC Memory]\n${lines.join('\n')}` : '';
+
+    // Turn-tag emit-instruction (consumer-owned lever, contract §7 step 1).
+    if (settings.emitTag !== false) {
+        const allIds = [...index.byId.keys()];
+        const sceneIds = [...new Set([...index.sceneByUid.values()].map(s => s.id))];
+        const personaName = extra.personaName || index.personas?.user?.name || '';
+        const instr = buildEmitInstruction(present, allIds, sceneIds, personaName);
+        block = block ? `${block}\n\n${instr}` : `[NPC Memory]\n${instr}`;
+    }
+
+    return block;
 }
 
 /**

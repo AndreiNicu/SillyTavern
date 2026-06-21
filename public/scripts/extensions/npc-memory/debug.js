@@ -25,7 +25,7 @@ export function dlog(...args) {
  */
 
 /** @type {Diagnostics} */
-const state = { index: null, lastTurn: null };
+const state = { index: null, lastTurn: null, lastCapture: null };
 
 export function setIndex(index) {
     state.index = index;
@@ -35,11 +35,24 @@ export function setLastTurn(turn) {
     state.lastTurn = { at: Date.now(), ...turn };
 }
 
+export function setLastCapture(capture) {
+    state.lastCapture = { at: Date.now(), ...capture };
+}
+
 export function getDiagnostics() {
     return state;
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+/** Render an NPC's remembered slots into a table cell. */
+function memoryCell(rec) {
+    if (!rec) return '<span style="opacity:.5">—</span>';
+    const out = [];
+    if (rec.slots?.lastWithUser?.summary) out.push(`<b>with you:</b> ${esc(rec.slots.lastWithUser.summary)}`);
+    if (rec.slots?.lastAlone?.summary) out.push(`<b>alone:</b> ${esc(rec.slots.lastAlone.summary)}`);
+    return out.length ? out.join('<br>') : '<span style="opacity:.5">(no events yet)</span>';
+}
 
 /**
  * Build a compact one-block status summary for the settings panel.
@@ -129,13 +142,15 @@ export function renderReport(store, settings) {
         for (const rec of idx.byId.values()) {
             const facets = Object.entries(rec.facets).map(([k, v]) => `${esc(k)}→${esc(v)}`).join(', ') || '—';
             const rels = (rec.relationships || []).map(r => `${esc(r.to)}${r.kind ? ` (${esc(r.kind)})` : ''}`).join(', ') || '—';
-            const known = store?.[rec.id] ? '✓' : '·';
+            const sr = store?.[rec.id];
+            const known = sr ? `✓ ${sr.events?.length || 0}` : '·';
+            const mem = memoryCell(sr);
             rows.push(`<tr><td>${known}</td><td><b>${esc(rec.id)}</b></td><td>${esc(rec.displayName)}</td>` +
-                `<td><small>${(rec.aliases || []).map(esc).join(', ')}</small></td>` +
-                `<td><small>${facets}</small></td><td><small>${rels}</small></td><td><small>${esc(rec.world || '')}</small></td></tr>`);
+                `<td><small>${facets}</small></td><td><small>${rels}</small></td>` +
+                `<td><small>${mem}</small></td></tr>`);
         }
         parts.push('<table style="width:100%;border-collapse:collapse" class="npcmem-table">' +
-            '<thead><tr><th>stored</th><th>id</th><th>name</th><th>aliases</th><th>facets (uid)</th><th>relationships</th><th>book</th></tr></thead>' +
+            '<thead><tr><th>stored (ev)</th><th>id</th><th>name</th><th>facets (uid)</th><th>relationships</th><th>remembered memory</th></tr></thead>' +
             `<tbody>${rows.join('')}</tbody></table>`);
     } else {
         parts.push('<p><em>none</em></p>');
@@ -173,6 +188,19 @@ export function renderReport(store, settings) {
         parts.push(t.injected
             ? `<pre style="white-space:pre-wrap" class="npcmem-pre">${esc(t.injected)}</pre>`
             : '<p><em>(nothing injected)</em></p>');
+    }
+
+    // Last capture — the turn-tag / inference result fed into the store.
+    parts.push('<h4>Last capture</h4>');
+    const c = state.lastCapture;
+    if (!c) {
+        parts.push('<p><em>No message captured yet this session.</em></p>');
+    } else {
+        const srcTag = c.source === 'inferred'
+            ? '<span style="color:var(--warning,#e0a800)">inferred</span>'
+            : `<b>${esc(c.source)}</b>`;
+        parts.push(`<p><small>at ${esc(new Date(c.at).toLocaleTimeString())} · actors: <b>${(c.actors || []).map(esc).join(', ') || '—'}</b>` +
+            ` · withUser: <b>${c.withUser}</b>${c.scene ? ` · scene: <b>${esc(c.scene)}</b>` : ''} · source: ${srcTag}</small></p>`);
     }
 
     parts.push(`<h4>Settings</h4><pre class="npcmem-pre">${esc(JSON.stringify(settings, null, 2))}</pre>`);

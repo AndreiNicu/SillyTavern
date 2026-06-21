@@ -18,7 +18,7 @@ import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 
 import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
-import { ensureRecord, save as saveStore, allRecords } from './store.js';
+import { ensureRecord, save as saveStore, allRecords, getRecord } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
 import { setVerbose, dlog, setIndex, setLastTurn, renderStatus, renderReport, renderReportText } from './debug.js';
 
@@ -71,7 +71,7 @@ async function refreshIndex() {
  * @param {Array<object>} activatedEntries
  */
 async function onWorldInfoActivated(activatedEntries) {
-    if (!settings().enabled) return clearInjection();
+    if (!settings().enabled) return void await clearInjection();
     if (!index) await refreshIndex();
 
     const presence = resolvePresence(activatedEntries, index);
@@ -83,10 +83,10 @@ async function onWorldInfoActivated(activatedEntries) {
             ensureRecord(id, { displayName: index.byId.get(id)?.displayName });
         }
         saveStore();
-        injected = buildInjectionText(presence.npcIds, index, settings());
-        applyInjection(injected, settings());
+        injected = buildInjectionText(presence.npcIds, index, settings(), getRecord);
+        await applyInjection(injected, settings());
     } else {
-        clearInjection();
+        await clearInjection();
     }
 
     setLastTurn({

@@ -6,13 +6,13 @@
  * before extension prompts are gathered during generation, an injection set
  * from the activation handler lands in the same generation's prompt.
  *
+ * `buildInjectionText` is pure (no SillyTavern imports) so it stays unit-
+ * testable; the apply/clear helpers lazy-import script.js at call time.
+ *
  * Phase 1 surfaces presence and manifest relationship hints among co-present
  * NPCs (contract §8). Stored memory slots/events are included once later phases
  * populate them.
  */
-
-import { setExtensionPrompt, extension_prompt_types, extension_prompt_roles } from '../../../script.js';
-import { getRecord } from './store.js';
 
 /** Unique key for this extension's prompt injection. */
 export const INJECT_KEY = 'npc_memory';
@@ -21,12 +21,13 @@ export const INJECT_KEY = 'npc_memory';
  * Build the injection text for the present NPCs. Returns '' when there is
  * nothing worth injecting (so the prompt stays clean).
  *
- * @param {string[]} npcIds                Present NPC ids.
+ * @param {string[]} npcIds      Present NPC ids.
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {object} settings
+ * @param {(id:string)=>(object|undefined)} [getRecord]  Store accessor.
  * @returns {string}
  */
-export function buildInjectionText(npcIds, index, settings) {
+export function buildInjectionText(npcIds, index, settings, getRecord = () => undefined) {
     if (!Array.isArray(npcIds) || npcIds.length === 0) return '';
 
     const cap = Number(settings.maxNpcs) > 0 ? Number(settings.maxNpcs) : npcIds.length;
@@ -37,8 +38,7 @@ export function buildInjectionText(npcIds, index, settings) {
     for (const id of present) {
         const meta = index.byId.get(id);
         const name = meta?.displayName ?? id;
-        const rec = getRecord(id);
-        const memory = rec ? summarizeRecord(rec) : '';
+        const memory = summarizeRecord(getRecord(id));
         if (memory) lines.push(`- ${name}: ${memory}`);
     }
 
@@ -61,10 +61,11 @@ export function buildInjectionText(npcIds, index, settings) {
  * Summarize a stored record into a single line. Empty in Phase 1 (no captured
  * memory yet); kept as the single place later phases extend.
  *
- * @param {import('./store.js').NpcRecord} rec
+ * @param {import('./store.js').NpcRecord|undefined} rec
  * @returns {string}
  */
 function summarizeRecord(rec) {
+    if (!rec) return '';
     const parts = [];
     if (rec.slots?.lastWithUser?.summary) parts.push(`with you: ${rec.slots.lastWithUser.summary}`);
     if (rec.slots?.lastAlone?.summary) parts.push(`recently: ${rec.slots.lastAlone.summary}`);
@@ -98,24 +99,26 @@ function relationshipHints(present, index) {
 /**
  * Apply (or clear) the injection for the current turn.
  *
- * @param {string} text       Injection text; '' clears the injection.
+ * @param {string} text     Injection text; '' clears the injection.
  * @param {object} settings
  */
-export function applyInjection(text, settings) {
-    const role = resolveRole(settings.role);
+export async function applyInjection(text, settings) {
+    const { setExtensionPrompt, extension_prompt_types, extension_prompt_roles } = await import('../../../script.js');
+    const role = resolveRole(extension_prompt_roles, settings.role);
     const depth = Number.isFinite(Number(settings.depth)) ? Number(settings.depth) : 2;
     setExtensionPrompt(INJECT_KEY, text || '', extension_prompt_types.IN_CHAT, depth, false, role);
 }
 
 /** Clear any standing injection. */
-export function clearInjection() {
+export async function clearInjection() {
+    const { setExtensionPrompt, extension_prompt_types } = await import('../../../script.js');
     setExtensionPrompt(INJECT_KEY, '', extension_prompt_types.IN_CHAT, 0);
 }
 
-function resolveRole(role) {
+function resolveRole(roles, role) {
     switch (String(role).toLowerCase()) {
-        case 'user': return extension_prompt_roles.USER;
-        case 'assistant': return extension_prompt_roles.ASSISTANT;
-        default: return extension_prompt_roles.SYSTEM;
+        case 'user': return roles.USER;
+        case 'assistant': return roles.ASSISTANT;
+        default: return roles.SYSTEM;
     }
 }

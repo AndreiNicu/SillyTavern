@@ -109,10 +109,13 @@ export function renderReport(store, settings) {
             const tag = b.mode === 'manifest' ? '<b>manifest</b>'
                 : b.mode === 'prose' ? 'prose'
                     : '<span style="opacity:.6">no NPCs</span>';
-            return `<tr><td><b>${esc(b.world || '(unnamed)')}</b></td><td>${b.entries}</td><td>${tag}</td><td>${b.npcCount || ''}</td></tr>`;
+            const origin = b.via === 'group-member'
+                ? 'group member'
+                : '<span style="opacity:.6">world info</span>';
+            return `<tr><td><b>${esc(b.world || '(unnamed)')}</b></td><td>${b.entries}</td><td>${tag}</td><td>${b.npcCount || ''}</td><td><small>${origin}</small></td></tr>`;
         }).join('');
         parts.push('<table style="width:100%;border-collapse:collapse" class="npcmem-table">' +
-            '<thead><tr><th>book</th><th>entries</th><th>source</th><th>npcs</th></tr></thead>' +
+            '<thead><tr><th>book</th><th>entries</th><th>source</th><th>npcs</th><th>origin</th></tr></thead>' +
             `<tbody>${rows}</tbody></table>`);
     } else {
         parts.push('<p><em>No world info loaded.</em></p>');

@@ -13,10 +13,10 @@ import { worldKey } from './manifest-reader.js';
 
 const LOG = '[npc-memory]';
 
-// Recognized non-NPC structural lore comment prefixes. Entries matching these
-// are intentionally ignored (world/state/tension lore), as opposed to genuinely
-// unknown entries. Used only to label the debug mapping clearly.
-const STRUCTURAL_RE = /^\s*(Location|WORLD_PULSE|SANDBOX_STATE|TENSION|NPC_SHIFT|ARC|[A-Z][A-Z0-9]*_STATE)\b/i;
+// An activated entry that resolves to neither an NPC nor a scene is only worth
+// flagging ("unresolved") when it *looks* like an NPC entry that should have
+// mapped. Any other lore (world/state/concept/etc.) is simply "ignored".
+const NPC_LIKE_RE = /^\s*NPC\s*[—–-]/i;
 
 /**
  * @typedef {object} EntryMapping
@@ -75,9 +75,9 @@ export function resolvePresence(activatedEntries, index) {
             continue;
         }
 
-        // Not an NPC/scene: distinguish recognized non-NPC lore (ignored) from
-        // genuinely unknown entries (unresolved) for clearer diagnostics.
-        const kind = STRUCTURAL_RE.test(comment) ? 'ignored' : 'unresolved';
+        // Not an NPC/scene: only an NPC-formatted entry that failed to map is a
+        // real problem ("unresolved"); all other lore is "ignored".
+        const kind = NPC_LIKE_RE.test(comment) ? 'unresolved' : 'ignored';
         mapping.push({ world, uid, comment, kind, id: null, via: '' });
     }
 

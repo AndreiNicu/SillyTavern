@@ -22,7 +22,8 @@ let inFlight = false;
  */
 export async function runBatchSummary(ctx, settings, personaName) {
     if (inFlight) { dlog('summary: already running, skipped'); return 0; }
-    if (typeof ctx?.generateRaw !== 'function') return 0;
+    // Need either a connection profile or the main generation API available.
+    if (!settings?.summaryProfile && typeof ctx?.generateRaw !== 'function') return 0;
     inFlight = true;
     let count = 0;
     try {
@@ -56,7 +57,7 @@ async function summarizeRecord(rec, ctx, settings, personaName) {
         if (evs.length === 0) continue;
         const prevSlot = rec.slots[slotKey];
         const prev = prevSlot?.kind === 'llm' ? prevSlot.summary : '';
-        const summary = await callSummary(ctx, rec.displayName, prev, evs, label, settings);
+        const summary = await callSummary(ctx, rec.displayName, prev, evs, label, settings, who);
         if (summary) {
             const last = evs[evs.length - 1];
             rec.slots[slotKey] = {
@@ -76,25 +77,48 @@ async function summarizeRecord(rec, ctx, settings, personaName) {
     return done;
 }
 
-async function callSummary(ctx, name, prev, evs, label, settings) {
+/**
+ * Generate one slot summary. Routes through a user-selected connection profile
+ * (normal temperature, via the profile's own preset) when configured, mirroring
+ * the lorebook LLM filter / group reply-strategy pattern; otherwise falls back
+ * to the main generation API.
+ */
+async function callSummary(ctx, name, prev, evs, label, settings, who) {
     const lines = evs.map(e => `- ${e.text}`).join('\n');
-    const systemPrompt =
-        'You maintain terse, factual third-person memory notes for a roleplay character. ' +
-        'Reply with ONLY the memory text — 1-2 sentences, past tense, no preamble, no quotes.';
-    const prompt = [
-        `Character: ${name}.`,
-        prev ? `Existing memory (${label}): ${prev}` : '',
-        `Recent events (${label}), oldest first:`,
+    const instruction =
+        `You maintain ${name}'s memory log for a roleplay. From the events below, capture only the ` +
+        `KEY details of what happened ${label}: concrete actions, decisions made, new facts learned, ` +
+        `and any shift in their relationship with ${who}. Omit atmosphere and filler. ` +
+        `${prev ? 'Integrate this with the existing memory below. ' : ''}` +
+        'Write 2-3 sentences, past tense, third person, no preamble and no quotes.';
+    const body = [
+        prev ? `Existing memory: ${prev}` : '',
+        'Events (oldest first):',
         lines,
-        `Write ${name}'s updated memory of what happened ${label}` +
-        `${prev ? ', merging the existing memory' : ''}. 1-2 sentences.`,
     ].filter(Boolean).join('\n');
+    const prompt = `${instruction}\n\n${body}`;
+    const maxTokens = Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 200;
 
+    // Preferred: dedicated connection profile (its preset controls temperature).
+    if (settings.summaryProfile) {
+        try {
+            const { ConnectionManagerRequestService } = await import('../shared.js');
+            const out = await ConnectionManagerRequestService.sendRequest(settings.summaryProfile, prompt, maxTokens);
+            const text = typeof out === 'string' ? out : (out?.content ?? '');
+            if (text) return String(text).trim();
+            console.warn(`${LOG} profile request returned empty; falling back to main API.`);
+        } catch (err) {
+            console.warn(`${LOG} connection profile request failed; falling back to main API.`, err);
+        }
+    }
+
+    // Fallback: main generation API.
     try {
+        if (typeof ctx?.generateRaw !== 'function') return '';
         const out = await ctx.generateRaw({
             prompt,
-            systemPrompt,
-            responseLength: Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 120,
+            systemPrompt: 'You write terse, factual memory notes. Reply with only the memory text.',
+            responseLength: maxTokens,
         });
         return String(out ?? '').trim();
     } catch (err) {

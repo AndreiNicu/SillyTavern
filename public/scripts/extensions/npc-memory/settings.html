@@ -46,6 +46,12 @@
             <label for="npcmem_every">Summarize every N messages</label>
             <input id="npcmem_every" type="number" class="text_pole widthUnset" min="1" max="50" step="1">
 
+            <label for="npcmem_summary_profile">Summarization connection profile</label>
+            <select id="npcmem_summary_profile" class="text_pole">
+                <option value="">Main generation API (default)</option>
+            </select>
+            <small class="opacity50p">Uses the profile's own preset (temperature etc.). Leave on default to use the main API.</small>
+
             <div class="flex-container alignItemsCenter marginTop5">
                 <div id="npcmem_refresh" class="menu_button">Reload manifest</div>
                 <div id="npcmem_inspect" class="menu_button">Inspect…</div>

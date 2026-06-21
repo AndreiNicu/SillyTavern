@@ -42,7 +42,9 @@ const defaultSettings = {
     // Batched summarization (contract §9).
     summarize: true,
     summarizeEvery: 4,
-    summaryTokens: 120,
+    summaryTokens: 200,
+    summaryProfile: '', // connection profile id; '' = use main generation API
+
     // Debug.
     debugLog: false,
 };
@@ -180,10 +182,38 @@ async function addSettingsPanel() {
         s.summarizeEvery = Math.max(1, Number($(this).val()) || 1);
         saveSettingsDebounced();
     });
+    renderProfileOptions(s.summaryProfile);
+    $('#npcmem_summary_profile').on('change', function () {
+        s.summaryProfile = String($(this).val() || '');
+        saveSettingsDebounced();
+    });
     $('#npcmem_refresh').on('click', () => refreshIndex());
     $('#npcmem_inspect').on('click', () => openInspector());
 
     updateStatusUI();
+}
+
+/**
+ * Populate the summarization connection-profile dropdown from the Connection
+ * Manager's profile list (mirrors the lorebook LLM-filter profile selector).
+ * @param {string} selectedId
+ */
+function renderProfileOptions(selectedId) {
+    const select = document.getElementById('npcmem_summary_profile');
+    if (!select) return;
+    const profiles = extension_settings?.connectionManager?.profiles ?? [];
+    select.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = profiles.length ? 'Main generation API (default)' : 'Connection Manager unavailable';
+    select.appendChild(def);
+    for (const p of [...profiles].sort((a, b) => String(a.name).localeCompare(String(b.name)))) {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        select.appendChild(opt);
+    }
+    select.value = selectedId && profiles.some(p => p.id === selectedId) ? selectedId : '';
 }
 
 function updateStatusUI() {
@@ -192,7 +222,11 @@ function updateStatusUI() {
     let html = renderStatus(allRecords());
     if (settings().summarize) {
         const every = Number(settings().summarizeEvery) > 0 ? Number(settings().summarizeEvery) : 4;
-        html += `<br><small>Summary batch: <b>${pendingCount()}/${every}</b> messages</small>`;
+        const profId = settings().summaryProfile;
+        const profName = profId
+            ? (extension_settings?.connectionManager?.profiles?.find(p => p.id === profId)?.name ?? profId)
+            : 'main API';
+        html += `<br><small>Summary batch: <b>${pendingCount()}/${every}</b> messages · via <b>${profName}</b></small>`;
     }
     el.html(html);
 }

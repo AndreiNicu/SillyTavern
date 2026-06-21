@@ -180,9 +180,15 @@ points at its source `uid`. Reserved facet keys:
 
 The consumer classifies each captured event as `withUser: true | false`.
 
-- Authoritative source: the **turn tag** `withUser` field (§7) when present.
-- Fallback: an event is `withUser: true` if any `personas.user.aliases` token
-  appears in the message text alongside the acting NPC; otherwise `false`.
+- Authoritative source: the **turn tag** `withUser` field (§7) when present. This
+  is POV-independent — the model states participation directly.
+- Fallback (POV-independent inference): an event is `withUser: true` if any
+  `personas.user.aliases` token appears in the message text **or** the message
+  addresses the player in the second person (`you`, `your`, …). This catches
+  both *"taps Andrei on the shoulder"* and *"taps you on the shoulder"*.
+- Actor inference is likewise POV/topology-independent: actors are the speaker
+  when it is a known NPC, otherwise the NPCs mentioned in the prose (so a
+  narrator/Director card that voices several NPCs still attributes correctly).
 - If no manifest persona is available, the consumer falls back to the active
   SillyTavern persona name.
 

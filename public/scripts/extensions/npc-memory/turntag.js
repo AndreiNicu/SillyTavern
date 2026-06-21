@@ -87,20 +87,34 @@ export function resolveNameToId(name, index) {
 
 /**
  * Synthesize an `inferred` tag for a character message with no model tag
- * (contract §6 / §7.3 step 4).
+ * (contract §6 / §7.3 step 4). POV-independent: actors are read from the
+ * speaker name when it is a known NPC, otherwise from NPC mentions in the text
+ * (covers narrator/Director cards), and `withUser` is true when the persona is
+ * named OR addressed in second person.
+ *
  * @param {{name?: string, mes?: string}} message
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {string[]} personaAliases  All known {{user}} names/aliases.
- * @returns {object} an inferred tag (always has at least one actor).
+ * @returns {object} an inferred tag.
  */
 export function inferTag(message, index, personaAliases) {
-    const actorId = resolveNameToId(message?.name, index);
     const text = String(message?.mes ?? '');
-    const withUser = aliasInText(text, personaAliases);
+
+    // Actor(s): prefer the speaker if it's a known NPC; otherwise detect NPCs
+    // mentioned in the prose (a narrator/Director card isn't itself an NPC).
+    const speakerId = resolveNameToId(message?.name, index);
+    let actors;
+    if (index?.byId?.has?.(speakerId)) {
+        actors = [speakerId];
+    } else {
+        actors = detectActorsInText(text, index);
+    }
+
+    const withUser = aliasInText(text, personaAliases) || addressesUser(text);
     return {
         v: TAG_VERSION,
-        actors: actorId ? [actorId] : [],
-        present: actorId ? [actorId] : [],
+        actors,
+        present: actors.slice(),
         withUser,
         scene: null,
         location: '',
@@ -108,15 +122,50 @@ export function inferTag(message, index, personaAliases) {
     };
 }
 
-/** Case-insensitive whole-word-ish test for any persona alias in the text. */
+/** Escape a string for use as a literal inside a RegExp. */
+function escapeRegex(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Whole-word, case-insensitive test for a needle in the text. */
+function wordInText(text, needle) {
+    const n = String(needle ?? '').trim();
+    if (!n) return false;
+    // \b is unreliable around non-word edges; anchor on non-letter boundaries.
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegex(n)}([^\\p{L}\\p{N}_]|$)`, 'iu');
+    return re.test(text);
+}
+
+/** Second-person address detection (POV-independent withUser signal). */
+const SECOND_PERSON_RE = /(^|[^\p{L}])(you|your|you're|youre|yours|yourself)([^\p{L}]|$)/iu;
+function addressesUser(text) {
+    return SECOND_PERSON_RE.test(String(text ?? ''));
+}
+
+/** Case-insensitive whole-word test for any persona alias in the text. */
 function aliasInText(text, aliases) {
-    const t = String(text ?? '').toLowerCase();
     for (const a of aliases ?? []) {
-        const alias = String(a ?? '').toLowerCase().trim();
+        const alias = String(a ?? '').trim();
         if (!alias || alias === '{{user}}') continue;
-        if (t.includes(alias)) return true;
+        if (wordInText(text, alias)) return true;
     }
     return false;
+}
+
+/**
+ * Detect which roster NPCs are mentioned (by displayName or alias) in the text.
+ * Used for actor inference when the speaker isn't itself an NPC.
+ * @param {string} text
+ * @param {import('./manifest-reader.js').NpcMemoryIndex} index
+ * @returns {string[]} matched NPC ids, in roster order.
+ */
+export function detectActorsInText(text, index) {
+    const out = [];
+    for (const rec of index?.byId?.values?.() ?? []) {
+        const needles = [rec.displayName, ...(rec.aliases ?? [])];
+        if (needles.some(n => wordInText(text, n))) out.push(rec.id);
+    }
+    return out;
 }
 
 /**

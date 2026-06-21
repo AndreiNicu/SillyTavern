@@ -2,60 +2,75 @@
  * Presence resolver for the NPC Memory consumer (contract §7 actors, §9 scene).
  *
  * Given the World Info entries that activated for a turn and the current index,
- * determine which NPCs are present and which scene is active. `uid` is used only
- * as a within-lorebook pointer to map an activated entry back to its NPC/scene
- * (contract §4); it is never stored as identity.
+ * determine which NPCs are present and which scene is active. `uid` is only a
+ * within-book pointer (contract §4), so each activated entry is mapped through
+ * the composite worldKey(entry.world, entry.uid). A per-entry `mapping` is
+ * returned for debugging (resolved vs. unresolved activations).
  */
 
 import { parseNpcComment } from './ids.js';
+import { worldKey } from './manifest-reader.js';
 
 const LOG = '[npc-memory]';
 
 /**
+ * @typedef {object} EntryMapping
+ * @property {string} world
+ * @property {number|string} uid
+ * @property {string} comment
+ * @property {'npc'|'scene'|'unresolved'} kind
+ * @property {string|null} id    Resolved npc/scene id, or null.
+ * @property {string} via        How it resolved: 'uid' | 'comment' | ''.
+ */
+
+/**
  * @typedef {object} Presence
- * @property {string[]} npcIds       Distinct NPC ids present this turn.
- * @property {string|null} sceneId   Active scene id, or null.
- * @property {object|null} scene     Active scene record, or null.
+ * @property {string[]} npcIds        Distinct NPC ids present this turn.
+ * @property {string|null} sceneId    Active scene id, or null.
+ * @property {object|null} scene      Active scene record, or null.
+ * @property {EntryMapping[]} mapping Per-activated-entry resolution (debug).
  */
 
 /**
  * Resolve presence from activated WI entries against the index.
- *
  * @param {Array<object>} activatedEntries  Entries from WORLD_INFO_ACTIVATED.
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @returns {Presence}
  */
 export function resolvePresence(activatedEntries, index) {
     const npcIds = new Set();
+    const mapping = [];
     let scene = null;
 
     for (const entry of Array.isArray(activatedEntries) ? activatedEntries : []) {
-        const uid = Number(entry?.uid);
+        const world = entry?.world ?? '';
+        const uid = entry?.uid;
+        const comment = String(entry?.comment ?? '');
+        const key = worldKey(world, uid);
 
-        // 1) Primary: map the activated uid through the index (manifest or prose).
-        if (Number.isFinite(uid)) {
-            const npcId = index.uidToNpcId.get(uid);
-            if (npcId) {
-                npcIds.add(npcId);
-                continue;
-            }
-            const sceneRec = index.sceneByUid.get(uid);
-            if (sceneRec) {
-                // Last activated scene wins for this turn.
-                scene = sceneRec;
-                continue;
-            }
+        // 1) Primary: map the activated entry through its book-scoped uid.
+        const npcId = index.uidToNpcId.get(key);
+        if (npcId) {
+            npcIds.add(npcId);
+            mapping.push({ world, uid, comment, kind: 'npc', id: npcId, via: 'uid' });
+            continue;
+        }
+        const sceneRec = index.sceneByUid.get(key);
+        if (sceneRec) {
+            scene = sceneRec; // Last activated scene wins for this turn.
+            mapping.push({ world, uid, comment, kind: 'scene', id: sceneRec.id, via: 'uid' });
+            continue;
         }
 
-        // 2) Fallback: parse the comment directly. Covers entries present in the
-        //    lorebook but absent from the index (e.g. a manifest that omits a uid).
-        const parsed = parseNpcComment(entry?.comment);
-        if (parsed && index.byId.has(parsed.id)) {
+        // 2) Fallback: parse the comment directly (covers entries not in index).
+        const parsed = parseNpcComment(comment);
+        if (parsed && (index.byId.has(parsed.id) || !index.fromManifest)) {
             npcIds.add(parsed.id);
-        } else if (parsed && !index.fromManifest) {
-            // Prose mode: trust the parsed id even if not pre-indexed.
-            npcIds.add(parsed.id);
+            mapping.push({ world, uid, comment, kind: 'npc', id: parsed.id, via: 'comment' });
+            continue;
         }
+
+        mapping.push({ world, uid, comment, kind: 'unresolved', id: null, via: '' });
     }
 
     const ids = Array.from(npcIds);
@@ -63,5 +78,5 @@ export function resolvePresence(activatedEntries, index) {
         console.debug(`${LOG} present: [${ids.join(', ')}]${scene ? `, scene=${scene.id}` : ''}`);
     }
 
-    return { npcIds: ids, sceneId: scene?.id ?? null, scene };
+    return { npcIds: ids, sceneId: scene?.id ?? null, scene, mapping };
 }

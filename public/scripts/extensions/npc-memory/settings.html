@@ -23,15 +23,21 @@
                 <span>Include relationship hints for co-present NPCs</span>
             </label>
 
+            <label class="checkbox_label" for="npcmem_debug">
+                <input id="npcmem_debug" type="checkbox">
+                <span>Verbose debug logging (console)</span>
+            </label>
+
             <label for="npcmem_depth">Injection depth</label>
             <input id="npcmem_depth" type="number" class="text_pole widthUnset" min="0" max="100" step="1">
 
             <div class="flex-container alignItemsCenter marginTop5">
                 <div id="npcmem_refresh" class="menu_button">Reload manifest</div>
+                <div id="npcmem_inspect" class="menu_button">Inspect…</div>
             </div>
 
             <hr class="m-t-1 m-b-1">
-            <div><small><b>Status</b></small></div>
+            <div><small><b>Status</b> <span class="opacity50p">(also: <code>/npc-memory</code>)</span></small></div>
             <div id="npcmem_status"><small>Not loaded.</small></div>
         </div>
     </div>

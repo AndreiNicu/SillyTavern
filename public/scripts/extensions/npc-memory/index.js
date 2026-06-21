@@ -1,21 +1,26 @@
 /**
- * NPC Memory — consumer extension (Phase 1).
+ * NPC Memory — consumer extension (Phase 1 + debug tooling).
  *
- * Reads a World-Forge NPC manifest (or falls back to prose parsing), tracks
+ * Reads World-Forge NPC manifests (or falls back to prose parsing), tracks
  * which NPCs are present each turn via World Info activation, maintains a
  * per-chat memory store keyed by stable NPC id, and selectively injects a
  * compact memory block for the present NPCs.
+ *
+ * Ships a debug surface (settings status, inspector popup, /npc-memory command,
+ * verbose logging) to make the pipeline observable against real exports.
  *
  * See MEMORY_CONTRACT.md for the full producer/consumer contract.
  */
 
 import { eventSource, event_types, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
+import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 
 import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
 import { ensureRecord, save as saveStore, allRecords } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
+import { setVerbose, dlog, setIndex, setLastTurn, renderStatus, renderReport, renderReportText } from './debug.js';
 
 const MODULE_NAME = 'npc-memory';
 const LOG = '[npc-memory]';
@@ -29,12 +34,12 @@ const defaultSettings = {
     // Content toggles.
     relationshipHints: true,
     announcePresence: true,
+    // Debug.
+    debugLog: false,
 };
 
 /** In-memory index for the active chat (rebuilt on chat change). */
 let index = null;
-/** Last resolved presence, for diagnostics/UI. */
-let lastPresence = { npcIds: [], sceneId: null };
 
 function settings() {
     return extension_settings[MODULE_NAME];
@@ -46,17 +51,22 @@ function loadSettings() {
     for (const [k, v] of Object.entries(defaultSettings)) {
         if (s[k] === undefined) s[k] = v;
     }
+    setVerbose(s.debugLog);
 }
 
 /** Rebuild the NPC index from the current world info. */
 async function refreshIndex() {
     index = await loadIndex();
+    setIndex(index);
+    dlog('index rebuilt', { npcs: index.byId.size, scenes: index.sceneByUid.size, books: index.manifests.length });
     updateStatusUI();
 }
 
 /**
  * WORLD_INFO_ACTIVATED handler: resolve present NPCs, ensure their store
- * records exist, and inject their memory block for this generation.
+ * records exist, inject their memory block, and record diagnostics. Runs (and
+ * is awaited) before extension prompts are gathered, so the injection lands in
+ * the same generation.
  *
  * @param {Array<object>} activatedEntries
  */
@@ -65,28 +75,31 @@ async function onWorldInfoActivated(activatedEntries) {
     if (!index) await refreshIndex();
 
     const presence = resolvePresence(activatedEntries, index);
-    lastPresence = presence;
+    dlog('activation', { entries: activatedEntries?.length ?? 0, mapping: presence.mapping });
 
-    if (presence.npcIds.length === 0) {
+    let injected = '';
+    if (presence.npcIds.length > 0) {
+        for (const id of presence.npcIds) {
+            ensureRecord(id, { displayName: index.byId.get(id)?.displayName });
+        }
+        saveStore();
+        injected = buildInjectionText(presence.npcIds, index, settings());
+        applyInjection(injected, settings());
+    } else {
         clearInjection();
-        updateStatusUI();
-        return;
     }
 
-    // Ensure a store record exists for each present NPC (keyed by stable id).
-    for (const id of presence.npcIds) {
-        ensureRecord(id, { displayName: index.byId.get(id)?.displayName });
-    }
-    saveStore();
-
-    const text = buildInjectionText(presence.npcIds, index, settings());
-    applyInjection(text, settings());
+    setLastTurn({
+        mapping: presence.mapping,
+        npcIds: presence.npcIds,
+        sceneId: presence.sceneId,
+        injected,
+    });
     updateStatusUI();
 }
 
 async function onChatChanged() {
     clearInjection();
-    lastPresence = { npcIds: [], sceneId: null };
     await refreshIndex();
 }
 
@@ -102,43 +115,64 @@ async function addSettingsPanel() {
     }
 
     const s = settings();
-    $('#npcmem_enabled').prop('checked', s.enabled).on('input', function () {
-        s.enabled = !!$(this).prop('checked');
-        if (!s.enabled) clearInjection();
-        saveSettingsDebounced();
-    });
-    $('#npcmem_announce').prop('checked', s.announcePresence).on('input', function () {
-        s.announcePresence = !!$(this).prop('checked');
-        saveSettingsDebounced();
-    });
-    $('#npcmem_relationships').prop('checked', s.relationshipHints).on('input', function () {
-        s.relationshipHints = !!$(this).prop('checked');
-        saveSettingsDebounced();
-    });
+    const bindCheckbox = (sel, key, after) => {
+        $(sel).prop('checked', s[key]).on('input', function () {
+            s[key] = !!$(this).prop('checked');
+            if (after) after(s[key]);
+            saveSettingsDebounced();
+        });
+    };
+
+    bindCheckbox('#npcmem_enabled', 'enabled', (on) => { if (!on) clearInjection(); });
+    bindCheckbox('#npcmem_announce', 'announcePresence');
+    bindCheckbox('#npcmem_relationships', 'relationshipHints');
+    bindCheckbox('#npcmem_debug', 'debugLog', (on) => setVerbose(on));
+
     $('#npcmem_depth').val(s.depth).on('input', function () {
         s.depth = Number($(this).val());
         saveSettingsDebounced();
     });
     $('#npcmem_refresh').on('click', () => refreshIndex());
+    $('#npcmem_inspect').on('click', () => openInspector());
 
     updateStatusUI();
 }
 
 function updateStatusUI() {
-    const status = $('#npcmem_status');
-    if (status.length === 0) return;
-    const src = index?.fromManifest ? `manifest (schema ${index.schema})` : (index?.byId.size ? 'prose fallback' : 'none');
-    const npcCount = index ? index.byId.size : 0;
-    const stored = Object.keys(allRecords()).length;
-    const present = lastPresence.npcIds
-        .map(id => index?.byId.get(id)?.displayName ?? id)
-        .join(', ') || '—';
-    status.html(
-        `Source: <b>${src}</b><br>` +
-        `NPCs known: <b>${npcCount}</b> · stored: <b>${stored}</b><br>` +
-        `Present last turn: <b>${present}</b>` +
-        (lastPresence.sceneId ? `<br>Scene: <b>${lastPresence.sceneId}</b>` : ''),
-    );
+    const el = $('#npcmem_status');
+    if (el.length === 0) return;
+    el.html(renderStatus(allRecords()));
+}
+
+/* ------------------------------ inspector ------------------------------- */
+
+async function openInspector() {
+    if (!index) await refreshIndex();
+    const html = `<div class="npcmem-report" style="text-align:left">${renderReport(allRecords(), settings())}</div>`;
+    try {
+        await callGenericPopup(html, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
+    } catch (err) {
+        // Fallback: dump to console if the popup API shape differs.
+        console.warn(`${LOG} inspector popup failed; logging report instead.`, err);
+        console.log(renderReportText(allRecords()));
+    }
+}
+
+function registerSlashCommand() {
+    try {
+        const ctx = getContext();
+        const { SlashCommandParser, SlashCommand } = ctx;
+        if (!SlashCommandParser || !SlashCommand) return;
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'npc-memory',
+            aliases: ['npcmem'],
+            helpString: 'Open the NPC Memory diagnostics inspector.',
+            callback: () => { openInspector(); return ''; },
+        }));
+        dlog('slash command /npc-memory registered.');
+    } catch (err) {
+        console.warn(`${LOG} could not register slash command.`, err);
+    }
 }
 
 /* ------------------------------- bootstrap ------------------------------ */
@@ -146,6 +180,7 @@ function updateStatusUI() {
 export async function init() {
     loadSettings();
     await addSettingsPanel();
+    registerSlashCommand();
 
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.WORLD_INFO_ACTIVATED, onWorldInfoActivated);

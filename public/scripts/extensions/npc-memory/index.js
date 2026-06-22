@@ -214,7 +214,8 @@ async function addSettingsPanel() {
  * extension, or after changing settings.
  */
 async function rescanMemory() {
-    if (!index) await refreshIndex();
+    // Reload the manifest/index first, in case lorebooks changed.
+    await refreshIndex();
     const ctx = getContext();
     const chat = ctx?.chat ?? [];
     if (chat.length === 0) {

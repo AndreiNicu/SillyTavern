@@ -19,18 +19,20 @@ const LOG = '[npc-memory]';
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {object} settings
  * @param {object} ctx           getContext() result.
+ * @param {boolean} [force]      Re-capture even if already captured (rescan).
  * @returns {{actors: string[], withUser: boolean, scene: string|null, source: string}|null}
  */
-export function captureFromMessage(messageId, index, settings, ctx) {
+export function captureFromMessage(messageId, index, settings, ctx, force = false) {
     const chat = ctx?.chat;
     const message = chat?.[messageId];
     if (!message || message.is_user || message.is_system) return null;
 
     // Guard against re-capturing the same swipe (CHARACTER_MESSAGE_RENDERED can
     // fire on re-render/scroll). A new swipe has a different id and re-captures.
+    // `force` (rescan) bypasses the guard.
     message.extra = message.extra || {};
     const swipeKey = typeof message.swipe_id === 'number' ? message.swipe_id : 0;
-    if (message.extra.npcmem_cap === swipeKey) return null;
+    if (!force && message.extra.npcmem_cap === swipeKey) return null;
     message.extra.npcmem_cap = swipeKey;
 
     const text = String(message.mes ?? '');

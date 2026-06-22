@@ -14,6 +14,10 @@
                 <input id="npcmem_enabled" type="checkbox">
                 <span>Enabled</span>
             </label>
+            <label class="checkbox_label" for="npcmem_inject">
+                <input id="npcmem_inject" type="checkbox">
+                <span>Inject memory into the prompt</span>
+            </label>
             <label class="checkbox_label" for="npcmem_announce">
                 <input id="npcmem_announce" type="checkbox">
                 <span>Announce present NPCs in the prompt</span>
@@ -52,9 +56,13 @@
             </select>
             <small class="opacity50p">Uses the profile's own preset (temperature etc.). Leave on default to use the main API.</small>
 
+            <label for="npcmem_rescan_n">Rescan window (last N messages)</label>
+            <input id="npcmem_rescan_n" type="number" class="text_pole widthUnset" min="1" max="1000" step="1">
+
             <div class="flex-container alignItemsCenter marginTop5">
                 <div id="npcmem_refresh" class="menu_button">Reload manifest</div>
                 <div id="npcmem_inspect" class="menu_button">Inspect…</div>
+                <div id="npcmem_rescan" class="menu_button">Rescan memory</div>
             </div>
 
             <hr class="m-t-1 m-b-1">

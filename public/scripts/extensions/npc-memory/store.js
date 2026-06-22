@@ -135,6 +135,13 @@ export function resetPending() {
     root().pending = 0;
 }
 
+/** Wipe all stored NPC memory for the current chat (used by rescan). */
+export function clearAll() {
+    const s = root();
+    s.npcs = {};
+    s.pending = 0;
+}
+
 /**
  * Record a captured event against an NPC and update its memory slot
  * (contract §6: withUser -> lastWithUser, else lastAlone).

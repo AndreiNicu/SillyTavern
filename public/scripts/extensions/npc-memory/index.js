@@ -18,7 +18,7 @@ import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 
 import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
-import { ensureRecord, save as saveStore, allRecords, getRecord, bumpPending, resetPending, pendingCount } from './store.js';
+import { ensureRecord, save as saveStore, allRecords, getRecord, bumpPending, resetPending, pendingCount, clearAll } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
 import { captureFromMessage } from './capture.js';
 import { runBatchSummary } from './summarize.js';
@@ -29,10 +29,14 @@ const LOG = '[npc-memory]';
 
 const defaultSettings = {
     enabled: true,
+    // Whether the memory block is injected into the prompt (capture still runs).
+    inject: true,
     // Injection placement.
     depth: 2,
     role: 'system',
     maxNpcs: 6,
+    // Rescan: how many trailing messages to reinitialize memory from.
+    rescanCount: 50,
     // Content toggles.
     relationshipHints: true,
     announcePresence: true,
@@ -94,9 +98,13 @@ async function onWorldInfoActivated(activatedEntries) {
             ensureRecord(id, { displayName: index.byId.get(id)?.displayName });
         }
         saveStore();
-        const personaName = getContext()?.name1 || index.personas?.user?.name || '';
-        injected = buildInjectionText(presence.npcIds, index, settings(), getRecord, { sceneId: presence.sceneId, personaName });
-        await applyInjection(injected, settings());
+        if (settings().inject) {
+            const personaName = getContext()?.name1 || index.personas?.user?.name || '';
+            injected = buildInjectionText(presence.npcIds, index, settings(), getRecord, { sceneId: presence.sceneId, personaName });
+            await applyInjection(injected, settings());
+        } else {
+            await clearInjection();
+        }
     } else {
         await clearInjection();
     }
@@ -167,6 +175,7 @@ async function addSettingsPanel() {
     };
 
     bindCheckbox('#npcmem_enabled', 'enabled', (on) => { if (!on) clearInjection(); });
+    bindCheckbox('#npcmem_inject', 'inject', (on) => { if (!on) clearInjection(); });
     bindCheckbox('#npcmem_announce', 'announcePresence');
     bindCheckbox('#npcmem_relationships', 'relationshipHints');
     bindCheckbox('#npcmem_emittag', 'emitTag');
@@ -187,10 +196,61 @@ async function addSettingsPanel() {
         s.summaryProfile = String($(this).val() || '');
         saveSettingsDebounced();
     });
+    $('#npcmem_rescan_n').val(s.rescanCount).on('input', function () {
+        s.rescanCount = Math.max(1, Number($(this).val()) || 1);
+        saveSettingsDebounced();
+    });
     $('#npcmem_refresh').on('click', () => refreshIndex());
     $('#npcmem_inspect').on('click', () => openInspector());
+    $('#npcmem_rescan').on('click', () => rescanMemory());
 
     updateStatusUI();
+}
+
+/**
+ * Reinitialize the per-NPC memory by re-capturing the last N chat messages.
+ * Clears existing stored memory first, then re-runs capture (forced) and a
+ * summary batch. Useful to bootstrap memory from a chat that predates the
+ * extension, or after changing settings.
+ */
+async function rescanMemory() {
+    if (!index) await refreshIndex();
+    const ctx = getContext();
+    const chat = ctx?.chat ?? [];
+    if (chat.length === 0) {
+        toast('No messages to rescan.');
+        return;
+    }
+    const n = Math.max(1, Number(settings().rescanCount) || 50);
+    const start = Math.max(0, chat.length - n);
+
+    const confirmed = await callGenericPopup(
+        `Reinitialize NPC memory from the last ${chat.length - start} message(s)? This clears the current stored memory for this chat.`,
+        POPUP_TYPE.CONFIRM,
+    );
+    if (!confirmed) return;
+
+    clearAll();
+    let captured = 0;
+    for (let i = start; i < chat.length; i++) {
+        const m = chat[i];
+        if (!m || m.is_user || m.is_system) continue;
+        if (captureFromMessage(i, index, settings(), ctx, true)) captured++;
+    }
+
+    if (settings().summarize && captured > 0) {
+        const personaName = ctx?.name1 || index.personas?.user?.name || '';
+        await runBatchSummary(ctx, settings(), personaName);
+    }
+    resetPending();
+    saveStore();
+    updateStatusUI();
+    toast(`Rescanned ${captured} message(s); memory reinitialized.`);
+}
+
+function toast(msg) {
+    if (typeof toastr !== 'undefined') toastr.info(msg, 'NPC Memory');
+    else console.info(`${LOG} ${msg}`);
 }
 
 /**

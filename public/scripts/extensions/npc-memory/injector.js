@@ -28,7 +28,7 @@ export const INJECT_KEY = 'npc_memory';
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {object} settings
  * @param {(id:string)=>(object|undefined)} [getRecord]  Store accessor.
- * @param {{ sceneId?: string|null, personaName?: string, queryText?: string }} [extra]
+ * @param {{ sceneId?: string|null, personaName?: string, queryText?: string, inSceneIds?: Set<string>|null }} [extra]
  * @returns {string}
  */
 export function buildInjectionText(npcIds, index, settings, getRecord = () => undefined, extra = {}) {
@@ -40,12 +40,15 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
 
     // Per-NPC memory: rolling "now" recap (contract §6) plus long-term key
     // moments, retrieved by relevance to the current moment (not just recency).
+    // The "now" recap is only injected for NPCs actually in the scene (when a
+    // scene roster is provided); long-term facts are gated by relevance instead.
     const maxLT = Number(settings.maxLongTerm) > 0 ? Number(settings.maxLongTerm) : 10;
     for (const id of present) {
         const meta = index.byId.get(id);
         const name = meta?.displayName ?? id;
         const rec = getRecord(id);
-        const now = summarizeRecord(rec);
+        const inScene = !extra.inSceneIds || extra.inSceneIds.has(id);
+        const now = inScene ? summarizeRecord(rec) : '';
         if (now) lines.push(`- ${name} (now): ${now}`);
         if (settings.longTermMemory !== false) {
             const facts = relevantLongTerm(rec, settings, extra, maxLT);

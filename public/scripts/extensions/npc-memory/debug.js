@@ -187,7 +187,11 @@ export function renderReport(store, settings) {
         }).join('');
         const ignored = t.mapping.filter(m => m.kind === 'ignored').length;
         const unresolved = t.mapping.filter(m => m.kind === 'unresolved').length;
+        const sceneLine = Array.isArray(t.inScene)
+            ? ` · in scene: <b>${t.inScene.map(esc).join(', ') || '—'}</b>`
+            : ' · in scene: <span style="opacity:.6">(no scene tracker)</span>';
         parts.push(`<p><small>at ${esc(when)} · present: <b>${t.npcIds.map(esc).join(', ') || '—'}</b>` +
+            `${sceneLine}` +
             `${t.sceneId ? ` · scene: <b>${esc(t.sceneId)}</b>` : ''}` +
             ` · ignored: ${ignored} · unresolved: ${unresolved}</small></p>`);
         parts.push('<table style="width:100%;border-collapse:collapse" class="npcmem-table">' +

@@ -18,6 +18,7 @@ import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 
 import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
+import { resolveNameToId } from './turntag.js';
 import { ensureRecord, save as saveStore, allRecords, getRecord, bumpPending, resetPending, pendingCount, clearAll } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
 import { captureFromMessage } from './capture.js';
@@ -53,6 +54,9 @@ const defaultSettings = {
     maxLongTerm: 10,
     relevanceRetrieval: true, // retrieve long-term by relevance, not recency
     relevanceWindow: 3,       // recent messages used to build the relevance query
+    // Inject the "now" recap only for NPCs the World-Forge scene tracker lists
+    // as present (falls back to activation when no scene roster is available).
+    sceneGating: true,
 
     // Debug.
     debugLog: false,
@@ -97,9 +101,22 @@ async function onWorldInfoActivated(activatedEntries) {
     const presence = resolvePresence(activatedEntries, index);
     dlog('activation', { entries: activatedEntries?.length ?? 0, mapping: presence.mapping });
 
+    // Authoritative scene roster from the World-Forge scene tracker (if used).
+    const sceneIds = settings().sceneGating ? scenePresentIds(index) : null;
+    const useScene = !!(sceneIds && sceneIds.size > 0);
+
+    // Candidates = activated (mentioned/relevant) NPCs, plus any in-scene NPCs
+    // whose keywords didn't fire this turn so their "now" still injects.
+    const candidates = presence.npcIds.slice();
+    if (useScene) {
+        for (const id of sceneIds) {
+            if (index.byId.has(id) && !candidates.includes(id)) candidates.push(id);
+        }
+    }
+
     let injected = '';
-    if (presence.npcIds.length > 0) {
-        for (const id of presence.npcIds) {
+    if (candidates.length > 0) {
+        for (const id of candidates) {
             ensureRecord(id, { displayName: index.byId.get(id)?.displayName });
         }
         saveStore();
@@ -107,7 +124,10 @@ async function onWorldInfoActivated(activatedEntries) {
             const ctx = getContext();
             const personaName = ctx?.name1 || index.personas?.user?.name || '';
             const queryText = recentQueryText(ctx);
-            injected = buildInjectionText(presence.npcIds, index, settings(), getRecord, { sceneId: presence.sceneId, personaName, queryText });
+            injected = buildInjectionText(candidates, index, settings(), getRecord, {
+                sceneId: presence.sceneId, personaName, queryText,
+                inSceneIds: useScene ? sceneIds : null,
+            });
             await applyInjection(injected, settings());
         } else {
             await clearInjection();
@@ -118,11 +138,32 @@ async function onWorldInfoActivated(activatedEntries) {
 
     setLastTurn({
         mapping: presence.mapping,
-        npcIds: presence.npcIds,
+        npcIds: candidates,
+        inScene: useScene ? [...sceneIds] : null,
         sceneId: presence.sceneId,
         injected,
     });
     updateStatusUI();
+}
+
+/**
+ * Read the authoritative scene roster from the World-Forge scene tracker
+ * (chat_metadata.world_forge_scene.present), mapping present character/NPC names
+ * to our stable ids. Returns a Set (possibly empty), or null when no scene
+ * record exists (so callers can fall back to activation-based presence).
+ * @param {import('./manifest-reader.js').NpcMemoryIndex} idx
+ * @returns {Set<string>|null}
+ */
+function scenePresentIds(idx) {
+    const scene = getContext()?.chatMetadata?.world_forge_scene;
+    if (!scene || !Array.isArray(scene.present)) return null;
+    const ids = new Set();
+    for (const p of scene.present) {
+        if (!p || (p.role !== 'npc' && p.role !== 'character')) continue;
+        const id = resolveNameToId(p.name, idx);
+        if (id) ids.add(id);
+    }
+    return ids;
 }
 
 /**
@@ -204,6 +245,7 @@ async function addSettingsPanel() {
     bindCheckbox('#npcmem_summarize', 'summarize');
     bindCheckbox('#npcmem_longterm', 'longTermMemory');
     bindCheckbox('#npcmem_relevance', 'relevanceRetrieval');
+    bindCheckbox('#npcmem_scenegating', 'sceneGating');
     $('#npcmem_depth').val(s.depth).on('input', function () {
         s.depth = Number($(this).val());
         saveSettingsDebounced();

@@ -15,6 +15,7 @@
  */
 
 import { buildEmitInstruction } from './turntag.js';
+import { selectRelevant } from './relevance.js';
 
 /** Unique key for this extension's prompt injection. */
 export const INJECT_KEY = 'npc_memory';
@@ -27,7 +28,7 @@ export const INJECT_KEY = 'npc_memory';
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {object} settings
  * @param {(id:string)=>(object|undefined)} [getRecord]  Store accessor.
- * @param {{ sceneId?: string|null, personaName?: string }} [extra]
+ * @param {{ sceneId?: string|null, personaName?: string, queryText?: string }} [extra]
  * @returns {string}
  */
 export function buildInjectionText(npcIds, index, settings, getRecord = () => undefined, extra = {}) {
@@ -37,8 +38,8 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
     const present = npcIds.slice(0, cap);
     const lines = [];
 
-    // Per-NPC remembered memory: rolling "now" recap (contract §6) plus durable
-    // long-term key moments.
+    // Per-NPC memory: rolling "now" recap (contract §6) plus long-term key
+    // moments, retrieved by relevance to the current moment (not just recency).
     const maxLT = Number(settings.maxLongTerm) > 0 ? Number(settings.maxLongTerm) : 10;
     for (const id of present) {
         const meta = index.byId.get(id);
@@ -47,7 +48,7 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
         const now = summarizeRecord(rec);
         if (now) lines.push(`- ${name} (now): ${now}`);
         if (settings.longTermMemory !== false) {
-            const facts = (rec?.longTerm ?? []).slice(-maxLT).map(e => e.text);
+            const facts = relevantLongTerm(rec, settings, extra, maxLT);
             if (facts.length) lines.push(`- ${name} (remembers): ${facts.join(' | ')}`);
         }
     }
@@ -78,8 +79,26 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
 }
 
 /**
- * Summarize a stored record into a single line. Empty in Phase 1 (no captured
- * memory yet); kept as the single place later phases extend.
+ * Pick the long-term facts to inject for an NPC: relevance-ranked against the
+ * current moment when enabled (and a query is available), else most-recent.
+ *
+ * @param {import('./store.js').NpcRecord|undefined} rec
+ * @param {object} settings
+ * @param {{ queryText?: string }} extra
+ * @param {number} maxLT
+ * @returns {string[]}
+ */
+function relevantLongTerm(rec, settings, extra, maxLT) {
+    const all = rec?.longTerm ?? [];
+    if (all.length === 0) return [];
+    if (settings.relevanceRetrieval !== false && extra.queryText) {
+        return selectRelevant(all, extra.queryText, { max: maxLT, minScore: 1 });
+    }
+    return all.slice(-maxLT).map(e => e.text); // fallback: recency
+}
+
+/**
+ * Summarize a stored record into a single line (the rolling "now" recap).
  *
  * @param {import('./store.js').NpcRecord|undefined} rec
  * @returns {string}

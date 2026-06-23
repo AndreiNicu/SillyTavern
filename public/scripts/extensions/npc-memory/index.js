@@ -51,6 +51,8 @@ const defaultSettings = {
     // Long-term memory tier (durable key moments).
     longTermMemory: true,
     maxLongTerm: 10,
+    relevanceRetrieval: true, // retrieve long-term by relevance, not recency
+    relevanceWindow: 3,       // recent messages used to build the relevance query
 
     // Debug.
     debugLog: false,
@@ -102,8 +104,10 @@ async function onWorldInfoActivated(activatedEntries) {
         }
         saveStore();
         if (settings().inject) {
-            const personaName = getContext()?.name1 || index.personas?.user?.name || '';
-            injected = buildInjectionText(presence.npcIds, index, settings(), getRecord, { sceneId: presence.sceneId, personaName });
+            const ctx = getContext();
+            const personaName = ctx?.name1 || index.personas?.user?.name || '';
+            const queryText = recentQueryText(ctx);
+            injected = buildInjectionText(presence.npcIds, index, settings(), getRecord, { sceneId: presence.sceneId, personaName, queryText });
             await applyInjection(injected, settings());
         } else {
             await clearInjection();
@@ -152,6 +156,18 @@ async function onCharacterMessage(messageId) {
     }
 }
 
+/**
+ * Build the relevance query from the most recent conversation turns (the
+ * strongest signal for what the current moment is about).
+ * @param {object} ctx  getContext() result.
+ * @returns {string}
+ */
+function recentQueryText(ctx) {
+    const chat = ctx?.chat ?? [];
+    const n = Number(settings().relevanceWindow) > 0 ? Number(settings().relevanceWindow) : 3;
+    return chat.filter(m => m && !m.is_system).slice(-n).map(m => String(m.mes ?? '')).join('\n');
+}
+
 async function onChatChanged() {
     clearInjection();
     await refreshIndex();
@@ -187,6 +203,7 @@ async function addSettingsPanel() {
 
     bindCheckbox('#npcmem_summarize', 'summarize');
     bindCheckbox('#npcmem_longterm', 'longTermMemory');
+    bindCheckbox('#npcmem_relevance', 'relevanceRetrieval');
     $('#npcmem_depth').val(s.depth).on('input', function () {
         s.depth = Number($(this).val());
         saveSettingsDebounced();

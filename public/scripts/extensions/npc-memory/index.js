@@ -19,10 +19,11 @@ import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
 import { loadIndex } from './manifest-reader.js';
 import { resolvePresence } from './resolver.js';
 import { resolveNameToId } from './turntag.js';
-import { ensureRecord, save as saveStore, allRecords, getRecord, bumpPending, resetPending, pendingCount, clearAll } from './store.js';
+import { ensureRecord, save as saveStore, allRecords, getRecord, bumpPending, resetPending, pendingCount, clearAll, getCompress } from './store.js';
 import { buildInjectionText, applyInjection, clearInjection } from './injector.js';
 import { captureFromMessage } from './capture.js';
 import { runBatchSummary } from './summarize.js';
+import { compressChat, uncompressChat, applyRecapFromMarker } from './compress.js';
 import { setVerbose, dlog, setIndex, setLastTurn, setLastCapture, renderStatus, renderReport, renderReportText } from './debug.js';
 
 const MODULE_NAME = 'npc-memory';
@@ -57,6 +58,10 @@ const defaultSettings = {
     // Inject the "now" recap only for NPCs the World-Forge scene tracker lists
     // as present (falls back to activation when no scene roster is available).
     sceneGating: true,
+    // Chat compression / checkpoint.
+    compressEnabled: true,
+    compressKeepLast: 0, // recent messages to keep visible past the marker
+    compressTokens: 400,
 
     // Debug.
     debugLog: false,
@@ -212,6 +217,21 @@ function recentQueryText(ctx) {
 async function onChatChanged() {
     clearInjection();
     await refreshIndex();
+    // Re-assert the compression recap for the newly-loaded chat (or clear it).
+    applyRecapFromMarker(settings());
+}
+
+async function compressNow() {
+    const res = await compressChat(getContext(), settings());
+    if (res.ok) toast(`Compressed ${res.hidden} message(s) into a recap${res.kept ? `; kept last ${res.kept}` : ''}.`);
+    else toast(`Nothing compressed (${res.reason}).`);
+    updateStatusUI();
+}
+
+async function uncompressNow() {
+    const res = await uncompressChat(getContext());
+    toast(res.ok ? 'Compression undone; messages restored.' : 'No active compression.');
+    updateStatusUI();
 }
 
 /* ----------------------------- settings UI ------------------------------ */
@@ -263,9 +283,15 @@ async function addSettingsPanel() {
         s.rescanCount = Math.max(1, Number($(this).val()) || 1);
         saveSettingsDebounced();
     });
+    $('#npcmem_keeplast').val(s.compressKeepLast).on('input', function () {
+        s.compressKeepLast = Math.max(0, Number($(this).val()) || 0);
+        saveSettingsDebounced();
+    });
     $('#npcmem_refresh').on('click', () => refreshIndex());
     $('#npcmem_inspect').on('click', () => openInspector());
     $('#npcmem_rescan').on('click', () => rescanMemory());
+    $('#npcmem_compress').on('click', () => compressNow());
+    $('#npcmem_uncompress').on('click', () => uncompressNow());
 
     updateStatusUI();
 }
@@ -352,6 +378,10 @@ function updateStatusUI() {
             : 'main API';
         html += `<br><small>Summary batch: <b>${pendingCount()}/${every}</b> messages · via <b>${profName}</b></small>`;
     }
+    const cmp = getCompress();
+    if (cmp) {
+        html += `<br><small>Compressed: <b>${cmp.cutMesId + 1}</b> message(s) hidden · recap active</small>`;
+    }
     el.html(html);
 }
 
@@ -399,7 +429,10 @@ export async function init() {
     eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessage);
 
     // Initial load if a chat is already open.
-    if (getContext()?.getCurrentChatId?.()) await refreshIndex();
+    if (getContext()?.getCurrentChatId?.()) {
+        await refreshIndex();
+        applyRecapFromMarker(settings());
+    }
 
     console.info(`${LOG} initialized.`);
 }

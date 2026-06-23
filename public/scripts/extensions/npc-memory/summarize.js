@@ -144,7 +144,7 @@ function summaryTokens(settings) {
  * controls temperature), falling back to the main generation API.
  * @returns {Promise<string>}
  */
-async function requestLLM(ctx, settings, prompt, maxTokens, name) {
+export async function requestLLM(ctx, settings, prompt, maxTokens, name) {
     if (settings.summaryProfile) {
         try {
             const { ConnectionManagerRequestService } = await import('../shared.js');

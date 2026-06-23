@@ -147,6 +147,21 @@ export function clearAll() {
     s.pending = 0;
 }
 
+/** Get the chat-compression marker, or null. */
+export function getCompress() {
+    return root().compress ?? null;
+}
+
+/** Set the chat-compression marker. */
+export function setCompress(c) {
+    root().compress = c;
+}
+
+/** Clear the chat-compression marker. */
+export function clearCompress() {
+    delete root().compress;
+}
+
 /** Max long-term memories retained per NPC (oldest dropped beyond this). */
 const MAX_LONGTERM = 30;
 

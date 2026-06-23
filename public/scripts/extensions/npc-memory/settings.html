@@ -71,10 +71,17 @@
             <label for="npcmem_rescan_n">Rescan window (last N messages)</label>
             <input id="npcmem_rescan_n" type="number" class="text_pole widthUnset" min="1" max="1000" step="1">
 
+            <label for="npcmem_keeplast">Compression: keep last N messages visible</label>
+            <input id="npcmem_keeplast" type="number" class="text_pole widthUnset" min="0" max="100" step="1">
+
             <div class="flex-container alignItemsCenter marginTop5">
                 <div id="npcmem_refresh" class="menu_button">Reload manifest</div>
                 <div id="npcmem_inspect" class="menu_button">Inspect…</div>
                 <div id="npcmem_rescan" class="menu_button">Rescan memory</div>
+            </div>
+            <div class="flex-container alignItemsCenter marginTop5">
+                <div id="npcmem_compress" class="menu_button">Compress chat</div>
+                <div id="npcmem_uncompress" class="menu_button">Undo compress</div>
             </div>
 
             <hr class="m-t-1 m-b-1">

@@ -54,6 +54,11 @@ function memoryCell(rec) {
         return `<b>${label}:</b> ${esc(slot.summary)}${raw}`;
     };
     const out = [line('with you', rec.slots?.lastWithUser), line('alone', rec.slots?.lastAlone)].filter(Boolean);
+    const lt = rec.longTerm ?? [];
+    if (lt.length) {
+        const items = lt.slice(-8).map(e => `• ${esc(e.text)}`).join('<br>');
+        out.push(`<b>long-term (${lt.length}):</b><br>${items}`);
+    }
     return out.length ? out.join('<br>') : '<span style="opacity:.5">(no events yet)</span>';
 }
 

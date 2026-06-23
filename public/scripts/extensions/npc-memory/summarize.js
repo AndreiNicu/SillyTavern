@@ -1,13 +1,19 @@
 /**
  * Batched memory summarization for the NPC Memory consumer (contract §9).
  *
- * Every N captured messages, fold each NPC's not-yet-summarized events into a
- * concise per-slot recap (lastWithUser / lastAlone) via one background
- * generation per non-empty slot. This keeps stored memory a real summary of
- * what happened rather than a raw snippet, at a controlled token cost.
+ * Every N captured messages, for each NPC with pending events:
+ *  - working memory: fold new events into a rolling per-slot recap
+ *    (lastWithUser / lastAlone) — "what's going on now";
+ *  - long-term memory: extract significant, lasting moments (declarations,
+ *    promises, revelations, decisions, relationship shifts) and append them to
+ *    a persistent, deduped longTerm[] — key history that is never silently
+ *    overwritten by the rolling recap.
+ *
+ * Requests route through a user-selected connection profile (its preset controls
+ * temperature) when configured, else the main generation API.
  */
 
-import { allRecords } from './store.js';
+import { allRecords, addLongTerm } from './store.js';
 import { dlog } from './debug.js';
 
 const LOG = '[npc-memory]';
@@ -22,7 +28,6 @@ let inFlight = false;
  */
 export async function runBatchSummary(ctx, settings, personaName) {
     if (inFlight) { dlog('summary: already running, skipped'); return 0; }
-    // Need either a connection profile or the main generation API available.
     if (!settings?.summaryProfile && typeof ctx?.generateRaw !== 'function') return 0;
     inFlight = true;
     let count = 0;
@@ -47,13 +52,16 @@ export function isSummarizing() {
 
 async function summarizeRecord(rec, ctx, settings, personaName) {
     const who = personaName || 'the user';
+    const newEvents = rec.events.filter(e => !e.summarized);
+
+    // --- Working memory: rolling recency recap per slot. ---
     const buckets = [
         ['lastWithUser', true, `with ${who}`],
         ['lastAlone', false, 'alone or with others'],
     ];
     let done = 0;
     for (const [slotKey, withUser, label] of buckets) {
-        const evs = rec.events.filter(e => !e.summarized && !!e.withUser === withUser);
+        const evs = newEvents.filter(e => !!e.withUser === withUser);
         if (evs.length === 0) continue;
         const prevSlot = rec.slots[slotKey];
         const prev = prevSlot?.kind === 'llm' ? prevSlot.summary : '';
@@ -61,27 +69,30 @@ async function summarizeRecord(rec, ctx, settings, personaName) {
         if (summary) {
             const last = evs[evs.length - 1];
             rec.slots[slotKey] = {
-                ts: last.ts,
-                summary,
-                scene: last.scene,
-                location: last.location,
-                source: 'summary',
-                kind: 'llm',
+                ts: last.ts, summary, scene: last.scene, location: last.location,
+                source: 'summary', kind: 'llm',
             };
             done++;
         }
     }
+
+    // --- Long-term memory: extract durable key moments from new events. ---
+    if (settings.longTermMemory !== false && newEvents.length) {
+        const facts = await extractLongTerm(ctx, rec.displayName, rec.longTerm ?? [], newEvents, who, settings);
+        if (facts.length) {
+            const added = addLongTerm(rec.id, facts, { source: 'summary', displayName: rec.displayName });
+            dlog('long-term', { id: rec.id, added });
+        }
+    }
+
     // Mark all processed events summarized regardless, so a failed call doesn't
-    // re-summarize the same backlog forever (slots keep last good summary).
+    // re-summarize the same backlog forever.
     for (const e of rec.events) e.summarized = true;
     return done;
 }
 
 /**
- * Generate one slot summary. Routes through a user-selected connection profile
- * (normal temperature, via the profile's own preset) when configured, mirroring
- * the lorebook LLM filter / group reply-strategy pattern; otherwise falls back
- * to the main generation API.
+ * Generate one rolling slot recap (working memory).
  */
 async function callSummary(ctx, name, prev, evs, label, settings, who) {
     const lines = evs.map(e => `- ${e.text}`).join('\n');
@@ -91,15 +102,49 @@ async function callSummary(ctx, name, prev, evs, label, settings, who) {
         `and any shift in their relationship with ${who}. Omit atmosphere and filler. ` +
         `${prev ? 'Integrate this with the existing memory below. ' : ''}` +
         'Write 2-3 sentences, past tense, third person, no preamble and no quotes.';
-    const body = [
-        prev ? `Existing memory: ${prev}` : '',
-        'Events (oldest first):',
-        lines,
-    ].filter(Boolean).join('\n');
-    const prompt = `${instruction}\n\n${body}`;
-    const maxTokens = Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 200;
+    const body = [prev ? `Existing memory: ${prev}` : '', 'Events (oldest first):', lines].filter(Boolean).join('\n');
+    return requestLLM(ctx, settings, `${instruction}\n\n${body}`, summaryTokens(settings), name);
+}
 
-    // Preferred: dedicated connection profile (its preset controls temperature).
+/**
+ * Extract new, durable long-term facts/moments from the events. Returns an array
+ * of one-line memory strings (possibly empty).
+ */
+async function extractLongTerm(ctx, name, existing, evs, who, settings) {
+    const lines = evs.map(e => `- ${e.text}`).join('\n');
+    const known = existing.length
+        ? `Already remembered (do NOT repeat these):\n${existing.map(e => `- ${e.text}`).join('\n')}\n\n`
+        : '';
+    const instruction =
+        'From the roleplay events below, extract any LASTING, significant moments worth remembering ' +
+        `permanently about ${name}: promises, declarations, confessions, decisions, revelations, ` +
+        `important personal facts, and changes in their relationship with ${who}. ` +
+        'Ignore small talk, mood, and routine actions. ' +
+        'Output each as its own short, self-contained line in past tense (no bullets, no preamble). ' +
+        'If there is nothing genuinely significant and new, reply with exactly: NONE';
+    const out = await requestLLM(ctx, settings, `${instruction}\n\n${known}Events (oldest first):\n${lines}`, summaryTokens(settings), name);
+    return parseFacts(out);
+}
+
+/** Parse an LLM list response into clean fact lines. */
+function parseFacts(text) {
+    const s = String(text ?? '').trim();
+    if (!s || /^none\.?$/i.test(s)) return [];
+    return s.split('\n')
+        .map(l => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+        .filter(l => l && !/^none\.?$/i.test(l));
+}
+
+function summaryTokens(settings) {
+    return Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 200;
+}
+
+/**
+ * Run one LLM request, preferring the configured connection profile (its preset
+ * controls temperature), falling back to the main generation API.
+ * @returns {Promise<string>}
+ */
+async function requestLLM(ctx, settings, prompt, maxTokens, name) {
     if (settings.summaryProfile) {
         try {
             const { ConnectionManagerRequestService } = await import('../shared.js');
@@ -111,18 +156,16 @@ async function callSummary(ctx, name, prev, evs, label, settings, who) {
             console.warn(`${LOG} connection profile request failed; falling back to main API.`, err);
         }
     }
-
-    // Fallback: main generation API.
     try {
         if (typeof ctx?.generateRaw !== 'function') return '';
         const out = await ctx.generateRaw({
             prompt,
-            systemPrompt: 'You write terse, factual memory notes. Reply with only the memory text.',
+            systemPrompt: 'You write terse, factual memory notes. Reply with only the requested text.',
             responseLength: maxTokens,
         });
         return String(out ?? '').trim();
     } catch (err) {
-        console.warn(`${LOG} summary generation failed for ${name} (${label}).`, err);
+        console.warn(`${LOG} generation failed for ${name}.`, err);
         return '';
     }
 }

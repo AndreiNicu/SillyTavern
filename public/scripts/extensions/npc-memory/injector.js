@@ -37,12 +37,19 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
     const present = npcIds.slice(0, cap);
     const lines = [];
 
-    // Per-NPC remembered memory (slots populated by capture, contract §6).
+    // Per-NPC remembered memory: rolling "now" recap (contract §6) plus durable
+    // long-term key moments.
+    const maxLT = Number(settings.maxLongTerm) > 0 ? Number(settings.maxLongTerm) : 10;
     for (const id of present) {
         const meta = index.byId.get(id);
         const name = meta?.displayName ?? id;
-        const memory = summarizeRecord(getRecord(id));
-        if (memory) lines.push(`- ${name}: ${memory}`);
+        const rec = getRecord(id);
+        const now = summarizeRecord(rec);
+        if (now) lines.push(`- ${name} (now): ${now}`);
+        if (settings.longTermMemory !== false) {
+            const facts = (rec?.longTerm ?? []).slice(-maxLT).map(e => e.text);
+            if (facts.length) lines.push(`- ${name} (remembers): ${facts.join(' | ')}`);
+        }
     }
 
     // Relationship hints among co-present NPCs (contract §8).

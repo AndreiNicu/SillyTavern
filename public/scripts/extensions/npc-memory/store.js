@@ -73,13 +73,18 @@ export function ensureRecord(id, meta = {}) {
             seeded: false,
             slots: { lastWithUser: null, lastAlone: null },
             events: [],
+            longTerm: [],
             firstSeen: now,
             updatedAt: now,
         };
         store.npcs[id] = rec;
-    } else if (meta.displayName && rec.displayName !== meta.displayName) {
-        rec.displayName = meta.displayName;
-        rec.updatedAt = now;
+    } else {
+        if (meta.displayName && rec.displayName !== meta.displayName) {
+            rec.displayName = meta.displayName;
+            rec.updatedAt = now;
+        }
+        // Backfill long-term array for records created before this tier existed.
+        if (!Array.isArray(rec.longTerm)) rec.longTerm = [];
     }
     return rec;
 }
@@ -140,6 +145,34 @@ export function clearAll() {
     const s = root();
     s.npcs = {};
     s.pending = 0;
+}
+
+/** Max long-term memories retained per NPC (oldest dropped beyond this). */
+const MAX_LONGTERM = 30;
+
+const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/**
+ * Append durable long-term memories to an NPC, deduped against existing ones.
+ * @param {string} id
+ * @param {string[]} texts   One-line key facts/moments.
+ * @param {{ source?: string, displayName?: string }} [meta]
+ * @returns {number} how many were added.
+ */
+export function addLongTerm(id, texts, meta = {}) {
+    const rec = ensureRecord(id, meta);
+    const seen = new Set(rec.longTerm.map(e => norm(e.text)));
+    let added = 0;
+    for (const t of texts) {
+        const text = String(t ?? '').trim();
+        if (!text || seen.has(norm(text))) continue;
+        seen.add(norm(text));
+        rec.longTerm.push({ ts: Date.now(), text, source: meta.source || 'summary' });
+        added++;
+    }
+    if (rec.longTerm.length > MAX_LONGTERM) rec.longTerm.splice(0, rec.longTerm.length - MAX_LONGTERM);
+    if (added) rec.updatedAt = Date.now();
+    return added;
 }
 
 /**

@@ -48,6 +48,9 @@ const defaultSettings = {
     summarizeEvery: 4,
     summaryTokens: 200,
     summaryProfile: '', // connection profile id; '' = use main generation API
+    // Long-term memory tier (durable key moments).
+    longTermMemory: true,
+    maxLongTerm: 10,
 
     // Debug.
     debugLog: false,
@@ -183,6 +186,7 @@ async function addSettingsPanel() {
     bindCheckbox('#npcmem_debug', 'debugLog', (on) => setVerbose(on));
 
     bindCheckbox('#npcmem_summarize', 'summarize');
+    bindCheckbox('#npcmem_longterm', 'longTermMemory');
     $('#npcmem_depth').val(s.depth).on('input', function () {
         s.depth = Number($(this).val());
         saveSettingsDebounced();

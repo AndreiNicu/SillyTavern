@@ -60,7 +60,7 @@ const defaultSettings = {
     sceneGating: true,
     // Chat compression / checkpoint.
     compressEnabled: true,
-    compressKeepLast: 0, // recent messages to keep visible past the marker
+    compressKeepLast: 8, // keep the last ~4 exchanges (8 messages) visible
     compressTokens: 400,
 
     // Debug.
@@ -221,9 +221,18 @@ async function onChatChanged() {
     applyRecapFromMarker(settings());
 }
 
+/** Minimum chat length before compression is worthwhile. */
+const MIN_COMPRESS_MESSAGES = 20;
+
 async function compressNow() {
-    const res = await compressChat(getContext(), settings());
-    if (res.ok) toast(`Compressed ${res.hidden} message(s) into a recap${res.kept ? `; kept last ${res.kept}` : ''}.`);
+    const ctx = getContext();
+    const total = (ctx?.chat ?? []).length;
+    if (total < MIN_COMPRESS_MESSAGES) {
+        toast(`Too few messages to compress (${total}). Need at least ${MIN_COMPRESS_MESSAGES} for a useful recap.`);
+        return;
+    }
+    const res = await compressChat(ctx, settings());
+    if (res.ok) toast(`Compressed ${res.hidden} message(s) into a recap; kept the last ${res.kept} for context.`);
     else toast(`Nothing compressed (${res.reason}).`);
     updateStatusUI();
 }

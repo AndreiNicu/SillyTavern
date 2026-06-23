@@ -76,6 +76,11 @@ function getSettings() {
     if (!s.npcPictures || typeof s.npcPictures !== 'object') s.npcPictures = {};
     if (typeof s.contextMessages !== 'number' || !Number.isFinite(s.contextMessages)) s.contextMessages = 10;
     s.contextMessages = Math.max(1, Math.min(50, Math.round(s.contextMessages)));
+    // Scene Tracker auto-scan cadence: re-scan presence every N AI messages.
+    // 0 = off (manual Refresh only). Scans run on the WI LLM-filter profile, so
+    // they no-op silently when that profile isn't configured.
+    if (typeof s.autoScanInterval !== 'number' || !Number.isFinite(s.autoScanInterval)) s.autoScanInterval = 3;
+    s.autoScanInterval = Math.max(0, Math.min(50, Math.round(s.autoScanInterval)));
     return s;
 }
 
@@ -485,8 +490,14 @@ async function migrateOwnedBookToConstant() {
 // ---------------------------------------------------------------------------
 const SCENE_META_KEY = 'world_forge_scene';
 const SCENE_EXTRACT_MAX_TOKENS = 1024;
+// Absence grace: how many consecutive auto/manual scans an NPC may go unmentioned
+// (without an explicit departure) before being dropped from the scene. Guards
+// against a quietly-present character flickering out just because the last N
+// messages didn't happen to name them — which would make the injected block
+// contradict itself turn to turn. Explicit departures bypass this entirely.
+const SCENE_ABSENCE_GRACE = 3;
 
-/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string}} ScenePerson */
+/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
 /** @typedef {{location: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
@@ -530,6 +541,7 @@ function getSceneData() {
     s.injectInterval = Math.max(0, Math.min(50, Math.round(s.injectInterval)));
     for (const p of s.present) {
         if (p && p.role !== 'user' && p.role !== 'character' && p.role !== 'npc') p.role = 'npc';
+        if (p && (typeof p.missesScans !== 'number' || !Number.isFinite(p.missesScans))) p.missesScans = 0;
     }
     return s;
 }
@@ -696,10 +708,13 @@ const SCENE_EXTRACT_PROMPT = [
     '  For each, give: "name"; "role" (one of "user", "character", or "npc" — "character" = a main AI character, "npc" = a minor/side character);',
     '  and for non-user entries the best current "health" (e.g. healthy, wounded, exhausted),',
     '  "condition" (any injury/soreness/status, or "" if none), and "lastLocation" (where they were last seen, or "").',
+    '- "left": the names of anyone who VISIBLY EXITED the scene in these recent messages — they walked out, fled,',
+    '  were taken away, teleported, hung up, died, or otherwise clearly departed. List a name here ONLY when the text',
+    '  shows an actual departure. Do NOT list someone merely because they stopped being mentioned — silence is not leaving.',
     'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
     '',
     'Reply with ONLY a JSON object of this exact shape:',
-    '{"location": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "lastLocation": "..."}]}',
+    '{"location": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "lastLocation": "..."}], "left": ["..."]}',
 ].join('\n');
 
 /**
@@ -728,9 +743,14 @@ function extractJsonObject(text) {
 /**
  * Run the secondary LLM over recent messages and merge the result into the
  * current scene record. Location is replaced; present cast is merged by name so
- * hand-edited stats survive unless the model has fresher detail. The roster is
- * never touched here.
- * @returns {Promise<{location: string, present: number}>}
+ * hand-edited stats survive unless the model has fresher detail.
+ *
+ * Removal is deliberate, never inferred from silence: anyone the model reports
+ * in "left" is dropped immediately (except the human player), and an NPC who
+ * simply goes unmentioned is only dropped after SCENE_ABSENCE_GRACE consecutive
+ * scans without a mention — so a quietly-present character doesn't flicker out
+ * of the injected block and contradict the prior turn. The roster is untouched.
+ * @returns {Promise<{location: string, present: number, removed: number}>}
  */
 async function refreshSceneFromChat() {
     if (!getCurrentChatId()) throw new Error('Open a chat first.');
@@ -759,28 +779,102 @@ async function refreshSceneFromChat() {
     }
 
     const incoming = Array.isArray(parsed.present) ? parsed.present : [];
-    const byName = new Map(scene.present.map(p => [String(p.name || '').toLowerCase(), p]));
+    const leftNames = (Array.isArray(parsed.left) ? parsed.left : [])
+        .map(n => String(n || '').trim())
+        .filter(Boolean);
+    const incomingNames = incoming
+        .map(r => String(r?.name || '').trim())
+        .filter(Boolean);
+
+    // Merge present cast. Match existing people tolerantly (sameCharacter) so a
+    // shorter/longer rendering of a name updates the same record instead of
+    // spawning a duplicate, and stamp missesScans = 0 to mark them seen now.
     for (const raw of incoming) {
         const name = String(raw?.name || '').trim();
         if (!name) continue;
         const role = (raw.role === 'user' || raw.role === 'character' || raw.role === 'npc') ? raw.role : 'npc';
-        const existing = byName.get(name.toLowerCase());
+        const existing = scene.present.find(p => sameCharacter(p.name, name));
         const next = existing || { name, role };
-        next.name = name;
         next.role = role;
+        next.missesScans = 0;
         if (role !== 'user') {
             if (String(raw.health || '').trim()) next.health = String(raw.health).trim();
             if (String(raw.condition || '').trim()) next.condition = String(raw.condition).trim();
             if (String(raw.lastLocation || '').trim()) next.lastLocation = String(raw.lastLocation).trim();
         }
-        if (!existing) {
-            scene.present.push(next);
-            byName.set(name.toLowerCase(), next);
-        }
+        if (!existing) scene.present.push(next);
     }
 
+    // Reconcile departures. The human player is never auto-removed. An explicit
+    // departure drops the person at once; otherwise an unmentioned NPC counts
+    // down its grace before being dropped, and main characters are left in place
+    // (their absence from a short window is far more likely to be a lull).
+    const isPresentNow = p => incomingNames.some(n => sameCharacter(n, p.name));
+    const hasLeft = p => leftNames.some(n => sameCharacter(n, p.name));
+    const before = scene.present.length;
+    scene.present = scene.present.filter(p => {
+        if (p.role === 'user') return true;
+        if (hasLeft(p)) return false;
+        if (isPresentNow(p)) { p.missesScans = 0; return true; }
+        if (p.role === 'npc') {
+            p.missesScans = (p.missesScans || 0) + 1;
+            if (p.missesScans >= SCENE_ABSENCE_GRACE) return false;
+        }
+        return true;
+    });
+    const removed = before - scene.present.length;
+
     saveSceneData();
-    return { location: scene.location, present: scene.present.length };
+    return { location: scene.location, present: scene.present.length, removed };
+}
+
+// --------------------------- auto-scan (presence) --------------------------
+// Event-driven, not a wall-clock timer: a re-scan is considered after each AI
+// reply and only fires once the configured number of AI messages have arrived
+// since the last scan. This never burns secondary-LLM calls while the chat is
+// idle, and the scan runs on the separate WI-filter connection so it doesn't
+// touch the main chat context — only its resulting <scene_state> block does.
+
+let autoScanInFlight = false;
+let lastAutoScanMsgCount = 0;
+
+/** Count of AI (non-user, non-system) messages currently in the chat. */
+function aiMessageCount() {
+    return Array.isArray(chat) ? chat.filter(m => m && !m.is_user && !m.is_system).length : 0;
+}
+
+/**
+ * Consider an automatic presence re-scan. No-ops unless auto-scan is enabled,
+ * a connection profile is configured, the scene state is actually being used
+ * (injected or the panel is open), and enough new AI messages have arrived.
+ */
+async function maybeAutoScan() {
+    const interval = getSettings().autoScanInterval;
+    if (!interval || interval <= 0) return;
+    if (autoScanInFlight) return;
+    if (!getCurrentChatId()) return;
+    // No profile → manual Refresh would also fail; stay silent rather than spam.
+    if (!String(world_info_llm_filter_profile || '')) return;
+    // Scanning is only worth its cost when the result will be seen or injected.
+    const scene = getSceneData();
+    if (!scene.inject && !sceneOpen) return;
+
+    const aiCount = aiMessageCount();
+    if (aiCount - lastAutoScanMsgCount < interval) return;
+
+    autoScanInFlight = true;
+    try {
+        const { removed } = await refreshSceneFromChat();
+        lastAutoScanMsgCount = aiMessageCount();
+        updateSceneExtensionPrompt();
+        if (sceneOpen) renderScene();
+        if (removed) log(`auto-scan dropped ${removed} from the scene`);
+    } catch (e) {
+        // Non-fatal: a flaky scan must never interrupt the chat.
+        warn('auto-scan failed (non-fatal)', e);
+    } finally {
+        autoScanInFlight = false;
+    }
 }
 
 // --------------------------------- UI --------------------------------------
@@ -842,8 +936,13 @@ const SETTINGS_HTML = `
                 <input id="wf_km_context_messages" class="neo-range-slider" type="range" min="1" max="50" step="1" />
                 <input id="wf_km_context_messages_counter" class="neo-range-input" type="number" min="1" max="50" step="1" />
             </div>
+            <label for="wf_scene_autoscan" data-i18n="Auto-scan scene presence every N AI messages (0 = off)">Auto-scan scene presence every N AI messages (0 = off)</label>
+            <div class="flex-container alignItemsCenter flexGap10">
+                <input id="wf_scene_autoscan" class="neo-range-slider" type="range" min="0" max="50" step="1" />
+                <input id="wf_scene_autoscan_counter" class="neo-range-input" type="number" min="0" max="50" step="1" />
+            </div>
             <small class="notes">
-                Uses the same Connection Profile as World Info → LLM Filter. Recorded moments are saved as always-on (Constant) entries in the chat-bound lorebook, so they're injected directly and are not picked over by the LLM filter.
+                Uses the same Connection Profile as World Info → LLM Filter. Recorded moments are saved as always-on (Constant) entries in the chat-bound lorebook, so they're injected directly and are not picked over by the LLM filter. Auto-scan re-reads recent messages to keep the Scene Tracker's "who's present" list current, dropping characters who visibly left; it only runs while the scene is being injected or its panel is open, and stays off if no Connection Profile is set.
             </small>
         </div>
     </div>
@@ -1056,6 +1155,8 @@ function applySettingsToUI() {
     $('#wf_scene_enabled').prop('checked', s.sceneTrackerEnabled);
     $('#wf_km_context_messages').val(s.contextMessages);
     $('#wf_km_context_messages_counter').val(s.contextMessages);
+    $('#wf_scene_autoscan').val(s.autoScanInterval);
+    $('#wf_scene_autoscan_counter').val(s.autoScanInterval);
     $('#wf_km_menu_button').toggle(!!s.keyMomentsEnabled);
     $('#wf_scene_menu_button').toggle(!!s.sceneTrackerEnabled);
 }
@@ -1085,6 +1186,16 @@ function wireSettings() {
     };
     $('#wf_km_context_messages').on('input', onContextMessages);
     $('#wf_km_context_messages_counter').on('input', onContextMessages);
+
+    const onAutoScan = function () {
+        const value = Math.max(0, Math.min(50, Number($(this).val()) || 0));
+        getSettings().autoScanInterval = value;
+        $('#wf_scene_autoscan').val(value);
+        $('#wf_scene_autoscan_counter').val(value);
+        save();
+    };
+    $('#wf_scene_autoscan').on('input', onAutoScan);
+    $('#wf_scene_autoscan_counter').on('input', onAutoScan);
 }
 
 function initKeyMomentsUI() {
@@ -1825,9 +1936,12 @@ async function onSceneRefresh() {
     setSceneStatus('Scanning recent messages…');
     $('#wf_scene_refresh').addClass('wf_scene_busy');
     try {
-        const { present } = await refreshSceneFromChat();
+        const { present, removed } = await refreshSceneFromChat();
+        // Keep the auto-scan cadence in step so it doesn't immediately re-fire.
+        lastAutoScanMsgCount = aiMessageCount();
         renderScene();
-        setSceneStatus(`Updated from chat — ${present} in scene.`);
+        updateSceneExtensionPrompt();
+        setSceneStatus(`Updated from chat — ${present} in scene${removed ? `, ${removed} left` : ''}.`);
     } catch (error) {
         warn('scene refresh failed', error);
         setSceneStatus(error?.message || String(error), true);
@@ -1970,6 +2084,10 @@ export function init() {
     // recompute before each generation, and clear/refresh when the chat changes.
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateSceneExtensionPrompt);
     eventSource.on(event_types.CHAT_CHANGED, updateSceneExtensionPrompt);
+    // Periodic presence re-scan, paced by AI messages (see maybeAutoScan). Reset
+    // the per-chat cadence baseline whenever the chat changes.
+    eventSource.on(event_types.MESSAGE_RECEIVED, maybeAutoScan);
+    eventSource.on(event_types.CHAT_CHANGED, () => { lastAutoScanMsgCount = aiMessageCount(); });
     // Defer DOM wiring until the document is ready so #extensionsMenu exists.
     const initUI = () => { initKeyMomentsUI(); initSceneTrackerUI(); };
     if (document.readyState === 'loading') {

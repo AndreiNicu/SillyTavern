@@ -4826,6 +4826,20 @@
                                         </label>
                                         <input id="world_info_llm_filter_context_messages" type="number" min="1" max="50" step="1" class="text_pole textarea_compact" />
                                     </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5">
+                                        <label title="Send extra scene context (your persona, the active character or group cast, and the Scene Tracker's location and present cast) to the LLM filter. Helps it keep entries for entities that are in play but not named in the last few messages." data-i18n="[title]Send extra scene context (your persona, the active character or group cast, and the Scene Tracker's location and present cast) to the LLM filter. Helps it keep entries for entities that are in play but not named in the last few messages." class="checkbox_label flex1">
+                                            <input id="world_info_llm_filter_scene_context" type="checkbox" />
+                                            <small data-i18n="Send scene context" class="whitespacenowrap flex1">
+                                                Send scene context
+                                            </small>
+                                        </label>
+                                        <label title="Send a short content snippet for each candidate entry so the model can match on meaning, not just keywords. Improves accuracy but adds the most tokens per scan." data-i18n="[title]Send a short content snippet for each candidate entry so the model can match on meaning, not just keywords. Improves accuracy but adds the most tokens per scan." class="checkbox_label flex1">
+                                            <input id="world_info_llm_filter_include_content" type="checkbox" />
+                                            <small data-i18n="Send entry snippets" class="whitespacenowrap flex1">
+                                                Send entry snippets
+                                            </small>
+                                        </label>
+                                    </div>
                                     <div class="world_info_llm_filter_control flex-container flexFlowColumn marginTop5" title="Override the system prompt sent to the LLM filter. Leave blank to use the default." data-i18n="[title]Override the system prompt sent to the LLM filter. Leave blank to use the default.">
                                         <label for="world_info_llm_filter_system_prompt" class="flexnowrap whitespacenowrap">
                                             <span data-i18n="LLM filter system prompt (override)">LLM filter system prompt (override)</span>

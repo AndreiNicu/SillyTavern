@@ -1,0 +1,36 @@
+.npc-memory-settings #npcmem_status {
+    opacity: 0.85;
+    line-height: 1.5;
+}
+
+.npc-memory-settings #npcmem_depth {
+    max-width: 6em;
+}
+
+/* Inspector report (popup) */
+.npcmem-report h4 {
+    margin: 0.8em 0 0.3em;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    padding-bottom: 0.2em;
+}
+
+.npcmem-report .npcmem-table th,
+.npcmem-report .npcmem-table td {
+    text-align: left;
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    vertical-align: top;
+}
+
+.npcmem-report .npcmem-table th {
+    opacity: 0.7;
+    font-weight: bold;
+}
+
+.npcmem-report .npcmem-pre {
+    background: var(--black30a);
+    padding: 0.5em;
+    border-radius: 5px;
+    max-height: 16em;
+    overflow: auto;
+}

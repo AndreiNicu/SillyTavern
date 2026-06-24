@@ -1,0 +1,92 @@
+<div class="npc-memory-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>NPC Memory</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <small>
+                Reads a World-Forge NPC manifest (or falls back to lorebook prose),
+                tracks which NPCs are present each turn, and injects their memory.
+            </small>
+
+            <label class="checkbox_label" for="npcmem_enabled">
+                <input id="npcmem_enabled" type="checkbox">
+                <span>Enabled</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_inject">
+                <input id="npcmem_inject" type="checkbox">
+                <span>Inject memory into the prompt</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_announce">
+                <input id="npcmem_announce" type="checkbox">
+                <span>Announce present NPCs in the prompt</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_relationships">
+                <input id="npcmem_relationships" type="checkbox">
+                <span>Include relationship hints for co-present NPCs</span>
+            </label>
+
+            <label class="checkbox_label" for="npcmem_emittag">
+                <input id="npcmem_emittag" type="checkbox">
+                <span>Emit turn-tag instruction (ask model for <code>npcmem</code> tag)</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_striptags">
+                <input id="npcmem_striptags" type="checkbox">
+                <span>Strip turn tags from stored messages</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_summarize">
+                <input id="npcmem_summarize" type="checkbox">
+                <span>Summarize memories with the LLM (batched)</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_longterm">
+                <input id="npcmem_longterm" type="checkbox">
+                <span>Long-term memory (remember key moments)</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_relevance">
+                <input id="npcmem_relevance" type="checkbox">
+                <span>Retrieve long-term memory by relevance (not just recency)</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_scenegating">
+                <input id="npcmem_scenegating" type="checkbox">
+                <span>Inject "now" only for NPCs in the scene (World-Forge tracker)</span>
+            </label>
+            <label class="checkbox_label" for="npcmem_debug">
+                <input id="npcmem_debug" type="checkbox">
+                <span>Verbose debug logging (console)</span>
+            </label>
+
+            <label for="npcmem_depth">Injection depth</label>
+            <input id="npcmem_depth" type="number" class="text_pole widthUnset" min="0" max="100" step="1">
+
+            <label for="npcmem_every">Summarize every N messages</label>
+            <input id="npcmem_every" type="number" class="text_pole widthUnset" min="1" max="50" step="1">
+
+            <label for="npcmem_summary_profile">Summarization connection profile</label>
+            <select id="npcmem_summary_profile" class="text_pole">
+                <option value="">Main generation API (default)</option>
+            </select>
+            <small class="opacity50p">Uses the profile's own preset (temperature etc.). Leave on default to use the main API.</small>
+
+            <label for="npcmem_rescan_n">Rescan window (last N messages)</label>
+            <input id="npcmem_rescan_n" type="number" class="text_pole widthUnset" min="1" max="1000" step="1">
+
+            <label for="npcmem_keeplast">Compression: keep last N messages visible (≈4 exchanges = 8)</label>
+            <input id="npcmem_keeplast" type="number" class="text_pole widthUnset" min="0" max="100" step="1">
+
+            <div class="flex-container alignItemsCenter marginTop5">
+                <div id="npcmem_refresh" class="menu_button">Reload manifest</div>
+                <div id="npcmem_inspect" class="menu_button">Inspect…</div>
+                <div id="npcmem_rescan" class="menu_button">Rescan memory</div>
+            </div>
+            <div class="flex-container alignItemsCenter marginTop5">
+                <div id="npcmem_compress" class="menu_button">Compress chat</div>
+                <div id="npcmem_uncompress" class="menu_button">Undo compress</div>
+            </div>
+
+            <hr class="m-t-1 m-b-1">
+            <div><small><b>Status</b> <span class="opacity50p">(also: <code>/npc-memory</code>)</span></small></div>
+            <div id="npcmem_status"><small>Not loaded.</small></div>
+        </div>
+    </div>
+</div>

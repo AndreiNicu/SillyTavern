@@ -1,0 +1,14 @@
+{
+    "display_name": "NPC Memory",
+    "loading_order": 11,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "andreinicu",
+    "version": "0.1.0",
+    "homePage": "https://github.com/AndreiNicu/SillyTavern",
+    "hooks": {
+        "activate": "init"
+    }
+}

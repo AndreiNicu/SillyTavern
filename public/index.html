@@ -4840,6 +4840,20 @@
                                             </small>
                                         </label>
                                     </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5">
+                                        <div class="flex1 flex-container flexFlowColumn" title="Maximum characters per scene-context field (persona/character description, scenario, and per-character status) sent to the LLM filter." data-i18n="[title]Maximum characters per scene-context field (persona/character description, scenario, and per-character status) sent to the LLM filter.">
+                                            <label for="world_info_llm_filter_scene_field_max" class="flexnowrap whitespacenowrap">
+                                                <span data-i18n="Scene field limit">Scene field limit</span>
+                                            </label>
+                                            <input id="world_info_llm_filter_scene_field_max" type="number" min="50" max="4000" step="10" class="text_pole textarea_compact" />
+                                        </div>
+                                        <div class="flex1 flex-container flexFlowColumn" title="Maximum characters per entry content snippet sent to the LLM filter when 'Send entry snippets' is enabled." data-i18n="[title]Maximum characters per entry content snippet sent to the LLM filter when 'Send entry snippets' is enabled.">
+                                            <label for="world_info_llm_filter_content_snippet_max" class="flexnowrap whitespacenowrap">
+                                                <span data-i18n="Snippet limit">Snippet limit</span>
+                                            </label>
+                                            <input id="world_info_llm_filter_content_snippet_max" type="number" min="20" max="1000" step="10" class="text_pole textarea_compact" />
+                                        </div>
+                                    </div>
                                     <div class="world_info_llm_filter_control flex-container flexFlowColumn marginTop5" title="Override the system prompt sent to the LLM filter. Leave blank to use the default." data-i18n="[title]Override the system prompt sent to the LLM filter. Leave blank to use the default.">
                                         <label for="world_info_llm_filter_system_prompt" class="flexnowrap whitespacenowrap">
                                             <span data-i18n="LLM filter system prompt (override)">LLM filter system prompt (override)</span>

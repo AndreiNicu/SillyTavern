@@ -93,6 +93,10 @@ export let world_info_llm_filter_scene_context = true;
 // semantic matching instead of relying on keys alone. Off by default — it adds
 // the most tokens.
 export let world_info_llm_filter_include_content = false;
+// Character limits for scene-context fields and per-entry content snippets sent
+// to the LLM filter. Lets users trade prompt size against context richness.
+export let world_info_llm_filter_scene_field_max = 600;
+export let world_info_llm_filter_content_snippet_max = 160;
 
 const DEFAULT_LLM_FILTER_PROMPT = `You are a relevance filter for roleplay world info entries. You will see (optionally) scene context (who is present, where, the active character(s) and the user persona), an author's note describing the current story beat, recent chat messages, and a numbered list of candidate entries — each shows the entry title, primary keys, secondary keys, and optionally a short content snippet.
 
@@ -848,6 +852,8 @@ export function getWorldInfoSettings() {
         world_info_llm_filter_system_prompt,
         world_info_llm_filter_scene_context,
         world_info_llm_filter_include_content,
+        world_info_llm_filter_scene_field_max,
+        world_info_llm_filter_content_snippet_max,
     };
 }
 
@@ -880,6 +886,8 @@ export function updateWorldInfoSettings(settings, activeWorldInfo) {
         world_info_llm_filter_system_prompt: (value) => world_info_llm_filter_system_prompt = String(value ?? ''),
         world_info_llm_filter_scene_context: (value) => world_info_llm_filter_scene_context = value === undefined ? true : Boolean(value),
         world_info_llm_filter_include_content: (value) => world_info_llm_filter_include_content = Boolean(value),
+        world_info_llm_filter_scene_field_max: (value) => world_info_llm_filter_scene_field_max = Math.max(50, Math.min(4000, Number(value) || 600)),
+        world_info_llm_filter_content_snippet_max: (value) => world_info_llm_filter_content_snippet_max = Math.max(20, Math.min(1000, Number(value) || 160)),
         // Unused
         world_info: (_value) => { },
     };
@@ -1042,6 +1050,8 @@ export function setWorldInfoSettings(settings, data) {
     $('#world_info_llm_filter_context_messages').val(world_info_llm_filter_context_messages);
     $('#world_info_llm_filter_scene_context').prop('checked', world_info_llm_filter_scene_context);
     $('#world_info_llm_filter_include_content').prop('checked', world_info_llm_filter_include_content);
+    $('#world_info_llm_filter_scene_field_max').val(world_info_llm_filter_scene_field_max);
+    $('#world_info_llm_filter_content_snippet_max').val(world_info_llm_filter_content_snippet_max);
     $('#world_info_llm_filter_system_prompt').val(world_info_llm_filter_system_prompt);
     renderLlmFilterProfileOptions(world_info_llm_filter_profile);
     toggleLlmFilterControls();
@@ -4716,12 +4726,6 @@ function parseLlmFilterIndices(text, candidateCount) {
     return result;
 }
 
-// Per-field cap for the scene-context block so a long character card or persona
-// description can't blow up the filter prompt.
-const LLM_FILTER_SCENE_FIELD_MAX = 600;
-// Per-entry content snippet cap when "Send entry snippets" is enabled.
-const LLM_FILTER_CONTENT_SNIPPET_MAX = 160;
-
 /**
  * Collapse whitespace and clamp a string to a maximum length for prompt inclusion.
  * @param {string} text
@@ -4750,7 +4754,7 @@ function buildLlmFilterSceneContext() {
 
     // User persona.
     const personaName = String(name1 || '').trim();
-    const personaDesc = clampForFilterPrompt(substituteParams(String(power_user?.persona_description || '')), LLM_FILTER_SCENE_FIELD_MAX);
+    const personaDesc = clampForFilterPrompt(substituteParams(String(power_user?.persona_description || '')), world_info_llm_filter_scene_field_max);
     if (personaName || personaDesc) {
         lines.push(`User persona: ${personaName || '(unnamed)'}${personaDesc ? ` — ${personaDesc}` : ''}`);
     }
@@ -4769,11 +4773,11 @@ function buildLlmFilterSceneContext() {
         if (char) {
             const name = String(char.name || '').trim();
             if (name) lines.push(`Active character: ${name}.`);
-            const desc = clampForFilterPrompt(substituteParams(String(char.description || '')), LLM_FILTER_SCENE_FIELD_MAX);
+            const desc = clampForFilterPrompt(substituteParams(String(char.description || '')), world_info_llm_filter_scene_field_max);
             if (desc) lines.push(`Character description: ${desc}`);
-            const personality = clampForFilterPrompt(substituteParams(String(char.personality || '')), LLM_FILTER_SCENE_FIELD_MAX);
+            const personality = clampForFilterPrompt(substituteParams(String(char.personality || '')), world_info_llm_filter_scene_field_max);
             if (personality) lines.push(`Character personality: ${personality}`);
-            const scenario = clampForFilterPrompt(substituteParams(String(char.scenario || '')), LLM_FILTER_SCENE_FIELD_MAX);
+            const scenario = clampForFilterPrompt(substituteParams(String(char.scenario || '')), world_info_llm_filter_scene_field_max);
             if (scenario) lines.push(`Scenario: ${scenario}`);
         }
     }
@@ -4783,10 +4787,23 @@ function buildLlmFilterSceneContext() {
     if (scene && typeof scene === 'object') {
         const location = String(scene.location || '').trim();
         if (location) lines.push(`Current location: ${location}.`);
-        const presentNames = (Array.isArray(scene.present) ? scene.present : [])
-            .map(p => String(p?.name || '').trim())
-            .filter(Boolean);
-        if (presentNames.length) lines.push(`Present in the scene: ${presentNames.join(', ')}.`);
+        const present = (Array.isArray(scene.present) ? scene.present : [])
+            .filter(p => String(p?.name || '').trim());
+        if (present.length) {
+            lines.push(`Present in the scene: ${present.map(p => String(p.name).trim()).join(', ')}.`);
+            // Per-character status from the Scene Tracker so the filter can keep entries
+            // for entities whose situation (injury, mood, attire, last whereabouts) is in
+            // play even when they aren't named in the last few messages.
+            for (const p of present) {
+                const bits = [];
+                if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
+                if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
+                if (String(p.clothes || '').trim()) bits.push(`wearing: ${p.clothes.trim()}`);
+                if (String(p.mood || '').trim()) bits.push(`mood: ${p.mood.trim()}`);
+                if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
+                if (bits.length) lines.push(`  ${String(p.name).trim()} — ${clampForFilterPrompt(bits.join('; '), world_info_llm_filter_scene_field_max)}`);
+            }
+        }
     }
 
     return lines.join('\n');
@@ -4815,7 +4832,7 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
         const secondary = JSON.stringify((entry.keysecondary ?? []).map(k => String(k).slice(0, 40)));
         let line = `[${i}] ${title} — keys: ${keys}, secondary: ${secondary}`;
         if (includeContent) {
-            const snippet = clampForFilterPrompt(entry.content, LLM_FILTER_CONTENT_SNIPPET_MAX);
+            const snippet = clampForFilterPrompt(entry.content, world_info_llm_filter_content_snippet_max);
             if (snippet) line += `, content: ${JSON.stringify(snippet)}`;
         }
         return line;
@@ -6606,6 +6623,22 @@ export function initWorldInfo() {
 
     $('#world_info_llm_filter_include_content').on('input', function () {
         world_info_llm_filter_include_content = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_scene_field_max').on('input', function () {
+        const value = Number($(this).val());
+        world_info_llm_filter_scene_field_max = Number.isFinite(value) && value > 0
+            ? Math.min(4000, Math.max(50, Math.floor(value)))
+            : 600;
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_content_snippet_max').on('input', function () {
+        const value = Number($(this).val());
+        world_info_llm_filter_content_snippet_max = Number.isFinite(value) && value > 0
+            ? Math.min(1000, Math.max(20, Math.floor(value)))
+            : 160;
         saveSettingsDebounced();
     });
 

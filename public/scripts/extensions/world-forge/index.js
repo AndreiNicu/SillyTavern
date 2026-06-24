@@ -497,7 +497,7 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 // contradict itself turn to turn. Explicit departures bypass this entirely.
 const SCENE_ABSENCE_GRACE = 3;
 
-/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
+/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothes?: string, mood?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
 /** @typedef {{location: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
@@ -687,6 +687,8 @@ function buildSceneBlock(scene) {
             const bits = [];
             if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
             if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
+            if (String(p.clothes || '').trim()) bits.push(`wearing: ${p.clothes.trim()}`);
+            if (String(p.mood || '').trim()) bits.push(`mood: ${p.mood.trim()}`);
             if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
             if (bits.length) status.push(`- ${p.name} — ${bits.join('; ')}`);
         }
@@ -707,14 +709,16 @@ const SCENE_EXTRACT_PROMPT = [
     '- "present": the characters/NPCs (and the user, if they are in the scene) currently in it.',
     '  For each, give: "name"; "role" (one of "user", "character", or "npc" — "character" = a main AI character, "npc" = a minor/side character);',
     '  and for non-user entries the best current "health" (e.g. healthy, wounded, exhausted),',
-    '  "condition" (any injury/soreness/status, or "" if none), and "lastLocation" (where they were last seen, or "").',
+    '  "condition" (any injury/soreness/status, or "" if none), "clothes" (what they are currently wearing, or "" if unknown),',
+    '  "mood" (their current emotional state, e.g. calm, angry, flustered, aroused, or "" if unknown),',
+    '  and "lastLocation" (where they were last seen, or "").',
     '- "left": the names of anyone who VISIBLY EXITED the scene in these recent messages — they walked out, fled,',
     '  were taken away, teleported, hung up, died, or otherwise clearly departed. List a name here ONLY when the text',
     '  shows an actual departure. Do NOT list someone merely because they stopped being mentioned — silence is not leaving.',
     'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
     '',
     'Reply with ONLY a JSON object of this exact shape:',
-    '{"location": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "lastLocation": "..."}], "left": ["..."]}',
+    '{"location": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothes": "...", "mood": "...", "lastLocation": "..."}], "left": ["..."]}',
 ].join('\n');
 
 /**
@@ -800,6 +804,8 @@ async function refreshSceneFromChat() {
         if (role !== 'user') {
             if (String(raw.health || '').trim()) next.health = String(raw.health).trim();
             if (String(raw.condition || '').trim()) next.condition = String(raw.condition).trim();
+            if (String(raw.clothes || '').trim()) next.clothes = String(raw.clothes).trim();
+            if (String(raw.mood || '').trim()) next.mood = String(raw.mood).trim();
             if (String(raw.lastLocation || '').trim()) next.lastLocation = String(raw.lastLocation).trim();
         }
         if (!existing) scene.present.push(next);
@@ -1680,6 +1686,8 @@ function renderPresent() {
             };
             field('health', 'Health', 'e.g. healthy, wounded');
             field('condition', 'Injury / soreness', 'e.g. sprained ankle');
+            field('clothes', 'Clothes', 'e.g. red dress, armor');
+            field('mood', 'Mood', 'e.g. calm, angry, flustered');
             field('lastLocation', 'Last known location', 'optional');
             $card.append($stats);
         }

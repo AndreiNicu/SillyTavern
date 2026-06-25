@@ -4854,6 +4854,12 @@
                                             <input id="world_info_llm_filter_content_snippet_max" type="number" min="20" max="1000" step="10" class="text_pole textarea_compact" />
                                         </div>
                                     </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5" title="Maximum entries sent to the LLM filter per call. When more entries are eligible (large worlds with many lorebooks), they are shortlisted by a cheap keyword pass first so the prompt stays bounded. Set 0 for no cap (send everything)." data-i18n="[title]Maximum entries sent to the LLM filter per call. When more entries are eligible (large worlds with many lorebooks), they are shortlisted by a cheap keyword pass first so the prompt stays bounded. Set 0 for no cap (send everything).">
+                                        <label for="world_info_llm_filter_max_candidates" class="flexnowrap whitespacenowrap">
+                                            <span data-i18n="Max candidates (0 = no cap)">Max candidates (0 = no cap)</span>
+                                        </label>
+                                        <input id="world_info_llm_filter_max_candidates" type="number" min="0" max="2000" step="10" class="text_pole textarea_compact" />
+                                    </div>
                                     <div class="world_info_llm_filter_control flex-container flexFlowColumn marginTop5" title="Override the system prompt sent to the LLM filter. Leave blank to use the default." data-i18n="[title]Override the system prompt sent to the LLM filter. Leave blank to use the default.">
                                         <label for="world_info_llm_filter_system_prompt" class="flexnowrap whitespacenowrap">
                                             <span data-i18n="LLM filter system prompt (override)">LLM filter system prompt (override)</span>

@@ -61,6 +61,10 @@ let $kmCandidates = null;
 let $kmNotes = null;
 let $kmRecord = null;
 let kmBusy = false;
+// When set, the scan is focused on a single message and its immediate
+// neighbours (message N-1, N, N+1) instead of the trailing recent window.
+// null means "scan the recent messages" (the default behaviour).
+let kmFocusIndex = null;
 
 function getSettings() {
     if (!extension_settings[SETTINGS_KEY] || typeof extension_settings[SETTINGS_KEY] !== 'object') {
@@ -296,6 +300,42 @@ function buildRecentTranscript() {
         lines.push(`${speaker}: ${body}`);
     }
     return lines.reverse().join('\n');
+}
+
+/**
+ * Build a transcript focused on a single message and its immediate neighbours
+ * (centerIndex - 1, centerIndex, centerIndex + 1), clamped to the chat bounds.
+ * Used when the user asks to scan a specific message number, e.g. "/keymoment 43"
+ * gathers key moments from messages 42, 43 and 44.
+ * @param {number} centerIndex Zero-based chat index of the focused message.
+ * @returns {string}
+ */
+function buildTranscriptAround(centerIndex) {
+    if (!Array.isArray(chat) || chat.length === 0) return '';
+    const start = Math.max(0, centerIndex - 1);
+    const end = Math.min(chat.length - 1, centerIndex + 1);
+
+    const lines = [];
+    for (let i = start; i <= end; i++) {
+        const msg = chat[i];
+        if (!msg || typeof msg.mes !== 'string') continue;
+        // Skip hidden/system filler but keep narrator content.
+        if (msg.is_system && msg.extra?.type !== 'narrator') continue;
+        const speaker = msg.is_user ? (msg.name || name1) : (msg.name || 'Character');
+        const body = stripReasoning(msg.mes);
+        if (!body) continue;
+        lines.push(`${speaker}: ${body}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Pick the transcript for the current scan: focused around a single message when
+ * a message number was supplied, otherwise the trailing recent window.
+ * @returns {string}
+ */
+function buildScanTranscript() {
+    return kmFocusIndex === null ? buildRecentTranscript() : buildTranscriptAround(kmFocusIndex);
 }
 
 /**
@@ -885,7 +925,7 @@ const WINDOW_HTML = `
         <div class="wf_km_header">
             <h3 class="margin0">
                 <i class="fa-solid fa-star"></i>
-                <span data-i18n="Add Key Moment">Add Key Moment</span>
+                <span id="wf_km_title" data-i18n="Add Key Moment">Add Key Moment</span>
             </h3>
             <div id="wf_km_close" class="menu_button menu_button_icon" title="Close">
                 <i class="fa-solid fa-xmark"></i>
@@ -1044,15 +1084,15 @@ async function runExtract() {
         setStatus('Open a chat first.', true);
         return;
     }
-    const transcript = buildRecentTranscript();
+    const transcript = buildScanTranscript();
     if (!transcript) {
-        setStatus('No messages to scan in this chat.', true);
+        setStatus(kmFocusIndex === null ? 'No messages to scan in this chat.' : `No messages to scan around #${kmFocusIndex}.`, true);
         renderCandidates([]);
         return;
     }
 
     setBusy(true);
-    setStatus('Scanning recent messages…');
+    setStatus(kmFocusIndex === null ? 'Scanning recent messages…' : `Scanning messages around #${kmFocusIndex}…`);
     renderCandidates([]);
     try {
         const prompt = [
@@ -1099,7 +1139,7 @@ async function runRecord() {
     setBusy(true);
     setStatus('Writing key moment(s)…');
     try {
-        const transcript = buildRecentTranscript();
+        const transcript = buildScanTranscript();
         const promptParts = [DEFAULT_SUMMARIZE_PROMPT, ''];
         if (selected.length) {
             promptParts.push('SELECTED KEY MOMENTS:', selected.map((s, i) => `${i + 1}. ${s}`).join('\n'), '');
@@ -1136,9 +1176,16 @@ async function runRecord() {
     }
 }
 
-function openWindow() {
+/**
+ * Open the Key Moments recorder.
+ * @param {number|null} focusIndex When a number, scan that message and its
+ *   immediate neighbours (N-1, N, N+1); when null, scan the recent window.
+ */
+function openWindow(focusIndex = null) {
     if (!$kmOverlay) return;
+    kmFocusIndex = (typeof focusIndex === 'number' && Number.isFinite(focusIndex)) ? focusIndex : null;
     $kmOverlay.removeClass('wf_km_hidden');
+    $kmOverlay.find('#wf_km_title').text(kmFocusIndex === null ? 'Add Key Moment' : `Add Key Moment — around #${kmFocusIndex}`);
     if ($kmNotes) $kmNotes.val('');
     renderCandidates([]);
     runExtract();
@@ -1225,7 +1272,7 @@ function initKeyMomentsUI() {
             return;
         }
 
-        $('#wf_km_menu_button').on('click', openWindow);
+        $('#wf_km_menu_button').on('click', () => openWindow());
         $('#wf_km_close').on('click', closeWindow);
         $('#wf_km_rescan').on('click', runExtract);
         $kmRecord.on('click', runRecord);
@@ -1249,11 +1296,33 @@ function initKeyMomentsUI() {
 function registerSlashCommands() {
     const ctx = getContext();
     if (!ctx?.SlashCommandParser || !ctx?.SlashCommand) return;
-    const { SlashCommandParser, SlashCommand } = ctx;
+    const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx;
+
+    // Resolve a message-number argument (e.g. "43") to a chat index, accepting an
+    // optional leading "#". Returns null when nothing usable was supplied.
+    const resolveFocusIndex = (raw) => {
+        const value = String(raw ?? '').trim().replace(/^#/, '');
+        if (value === '') return null;
+        const n = Number(value);
+        if (!Number.isInteger(n)) return null;
+        if (!Array.isArray(chat) || n < 0 || n >= chat.length) {
+            toastr?.warning(`Message #${value} is out of range for this chat.`, 'World Forge');
+            return null;
+        }
+        return n;
+    };
+
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'keymoment',
-        callback: () => { openWindow(); return ''; },
-        helpString: 'Opens the World Forge "Add Key Moment" recorder.',
+        callback: (_args, value) => { openWindow(resolveFocusIndex(value)); return ''; },
+        unnamedArgumentList: SlashCommandArgument ? [
+            SlashCommandArgument.fromProps({
+                description: 'message number to focus the scan on (scans that message and its neighbours, e.g. "43" → 42, 43, 44)',
+                typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.NUMBER] : undefined,
+                isRequired: false,
+            }),
+        ] : undefined,
+        helpString: 'Opens the World Forge "Add Key Moment" recorder. Pass a message number (e.g. <code>/keymoment 43</code>) to scan that message and its neighbours; with no argument it scans the recent messages.',
     }));
 }
 

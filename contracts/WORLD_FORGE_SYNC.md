@@ -2,6 +2,13 @@
 
 **Status:** Draft · **Version:** 1 · **Last updated:** 2026-06-28
 
+> **Shared contract — canonical source of truth:**
+> [`AndreiNicu/World-Forge`](https://github.com/AndreiNicu/World-Forge) → `contracts/WORLD_FORGE_SYNC.md`.
+> Copies in other repositories (including the SillyTavern fork) are mirrored
+> **read-only**. Do not edit a copy — edit the canonical file, then run the
+> contract sync (`scripts/sync-contracts.sh`). A CI drift check keeps every copy
+> byte-identical to this canonical version.
+
 This document is the handshake between the World-Forge producer pipeline and the
 **two** SillyTavern companion extensions that consume its output in this fork:
 
@@ -11,7 +18,7 @@ This document is the handshake between the World-Forge producer pipeline and the
 | **Consumer A** | `npc-memory` extension | `public/scripts/extensions/npc-memory/` |
 | **Consumer B** | `world-forge` extension (Scene Tracker, Key Moments, Style Override) | `public/scripts/extensions/world-forge/` |
 
-It is the companion to [`MEMORY_CONTRACT.md`](public/scripts/extensions/npc-memory/MEMORY_CONTRACT.md),
+It is the companion to [`MEMORY_CONTRACT.md`](./MEMORY_CONTRACT.md),
 which fully specifies the **npc-memory data channel** (manifest, facets, turn
 tag). That contract is in good shape and already honored by the Compiler and
 `tools/validate_export.py`. This document covers the *other* seams — the ones

@@ -1,0 +1,26 @@
+name: Contracts drift check
+
+# Fails if the mirrored shared contracts under contracts/ have drifted from
+# their canonical copies in the World-Forge repo. See contracts/README.md.
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'scripts/sync-contracts.sh'
+      - '.github/workflows/contracts-drift.yml'
+  push:
+    branches:
+      - release
+    paths:
+      - 'contracts/**'
+      - 'scripts/sync-contracts.sh'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check contracts are in sync with canonical World-Forge
+        run: bash scripts/sync-contracts.sh --check

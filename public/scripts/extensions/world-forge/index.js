@@ -538,7 +538,7 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 const SCENE_ABSENCE_GRACE = 3;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
-/** @typedef {{location: string, time: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{location: string, time: string, day: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
@@ -547,6 +547,9 @@ function defaultSceneData() {
         // Free-form time of the current scene: either a clock time ("4PM") or a
         // time-of-day label ("morning", "evening", "night"). '' = unset.
         time: '',
+        // Day counter for time-dependent worlds (a story spanning days 1, 2, 3…).
+        // 0 = off (no day is tracked / injected).
+        day: 0,
         present: [],
         // Group chats only: name of the group member card that plays the NPCs
         // (e.g. an "NPC controller" card backed by a lorebook). '' = unset.
@@ -574,6 +577,8 @@ function getSceneData() {
     }
     if (typeof s.location !== 'string') s.location = '';
     if (typeof s.time !== 'string') s.time = '';
+    if (typeof s.day !== 'number' || !Number.isFinite(s.day)) s.day = 0;
+    s.day = Math.max(0, Math.round(s.day));
     if (!Array.isArray(s.present)) s.present = [];
     if (typeof s.director !== 'string') s.director = '';
     if (typeof s.inject !== 'boolean') s.inject = true;
@@ -669,6 +674,8 @@ function buildSceneBlock(scene) {
     const lines = [];
     const location = String(scene.location || '').trim();
     if (location) lines.push(`The current scene takes place at: ${location}`);
+    const day = Number(scene.day) || 0;
+    if (day >= 1) lines.push(`Current day: Day ${day}.`);
     const time = String(scene.time || '').trim();
     if (time) lines.push(`Current time: ${time}`);
 
@@ -753,6 +760,8 @@ const SCENE_EXTRACT_PROMPT = [
     '- "location": a short description of where the scene is currently happening.',
     '- "time": the current time of the scene if it can be told from the text — either a clock time (e.g. "4PM")',
     '  or a time of day (e.g. "morning", "noon", "evening", "night"). Use "" if it is unknown.',
+    '- "dayAdvance": the number of WHOLE days that pass within these recent messages because of an explicit time',
+    '  skip (sleeping through to the next morning, "three days later", etc.). Use 0 if the scene stays on the same day.',
     '- "present": the characters/NPCs (and the user, if they are in the scene) currently in it.',
     '  For each, give: "name"; "role" (one of "user", "character", or "npc" — "character" = a main AI character, "npc" = a minor/side character);',
     '  and for non-user entries the best current "health" (e.g. healthy, wounded, exhausted),',
@@ -764,7 +773,7 @@ const SCENE_EXTRACT_PROMPT = [
     'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
     '',
     'Reply with ONLY a JSON object of this exact shape:',
-    '{"location": "...", "time": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "lastLocation": "..."}], "left": ["..."]}',
+    '{"location": "...", "time": "...", "dayAdvance": 0, "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "lastLocation": "..."}], "left": ["..."]}',
 ].join('\n');
 
 /**
@@ -829,6 +838,12 @@ async function refreshSceneFromChat() {
     }
     if (typeof parsed.time === 'string' && parsed.time.trim()) {
         scene.time = parsed.time.trim();
+    }
+    // Day only auto-advances once the user has opted in by setting a day (>= 1),
+    // and only on explicit in-text time skips — never reset or started from a scan.
+    const dayAdvance = Number(parsed.dayAdvance);
+    if (scene.day >= 1 && Number.isFinite(dayAdvance) && dayAdvance > 0) {
+        scene.day += Math.round(dayAdvance);
     }
 
     const incoming = Array.isArray(parsed.present) ? parsed.present : [];
@@ -1387,6 +1402,14 @@ const SCENE_WINDOW_HTML = `
                 <span class="wf_scene_time_chip" data-time="Midnight" data-i18n="Midnight">Midnight</span>
             </div>
 
+            <label for="wf_scene_day" data-i18n="Day (for stories spanning multiple days; 0 = off)">Day (for stories spanning multiple days; 0 = off)</label>
+            <div class="wf_scene_day_row">
+                <div id="wf_scene_day_dec" class="menu_button menu_button_icon" title="Previous day"><i class="fa-solid fa-minus"></i></div>
+                <input id="wf_scene_day" class="text_pole" type="number" min="0" max="100000" step="1" />
+                <div id="wf_scene_day_inc" class="menu_button menu_button_icon" title="Next day"><i class="fa-solid fa-plus"></i></div>
+            </div>
+            <small class="notes" data-i18n="Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.">Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.</small>
+
             <div id="wf_scene_director_row" style="display:none;">
                 <label for="wf_scene_director" data-i18n="World Director (group member who plays the NPCs)">World Director (group member who plays the NPCs)</label>
                 <select id="wf_scene_director" class="text_pole"></select>
@@ -1506,6 +1529,8 @@ const SCENE_CSS = `
 }
 .wf_scene_time_chip:hover { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); }
 .wf_scene_time_chip.wf_scene_time_active { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); background: var(--SmartThemeQuoteColor, #6bb1ff); color: var(--SmartThemeBlurTintColor, #1f1f1f); }
+.wf_scene_day_row { display: flex; align-items: center; gap: 6px; }
+.wf_scene_day_row .text_pole { flex: 1 1 auto; min-width: 0; text-align: center; }
 #wf_scene_director_row { display: flex; flex-direction: column; gap: 4px; }
 .wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
 .wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
@@ -2009,6 +2034,7 @@ function renderScene() {
     $('#wf_scene_location').val(scene.location);
     $('#wf_scene_time').val(scene.time);
     renderSceneTimeChips();
+    $('#wf_scene_day').val(scene.day);
     $('#wf_scene_inject').prop('checked', scene.inject);
     $('#wf_scene_inject_position').val(String(scene.injectPosition));
     $('#wf_scene_inject_depth').val(scene.injectDepth);
@@ -2108,6 +2134,19 @@ function initSceneTrackerUI() {
             saveSceneData();
             updateSceneExtensionPrompt();
         });
+        $('#wf_scene_day').on('input', function () {
+            getSceneData().day = Math.max(0, Math.round(Number($(this).val()) || 0));
+            saveSceneData();
+        });
+        const stepDay = (delta) => {
+            const scene = getSceneData();
+            scene.day = Math.max(0, scene.day + delta);
+            $('#wf_scene_day').val(scene.day);
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        };
+        $('#wf_scene_day_dec').on('click', () => stepDay(-1));
+        $('#wf_scene_day_inc').on('click', () => stepDay(1));
         $('#wf_scene_inject').on('change', function () {
             getSceneData().inject = $(this).prop('checked');
             saveSceneData();

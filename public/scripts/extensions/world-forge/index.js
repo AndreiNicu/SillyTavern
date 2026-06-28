@@ -537,13 +537,19 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 // contradict itself turn to turn. Explicit departures bypass this entirely.
 const SCENE_ABSENCE_GRACE = 3;
 
-/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
-/** @typedef {{location: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
+/** @typedef {{location: string, time: string, day: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 /** @returns {SceneData} */
 function defaultSceneData() {
     return {
         location: '',
+        // Free-form time of the current scene: either a clock time ("4PM") or a
+        // time-of-day label ("morning", "evening", "night"). '' = unset.
+        time: '',
+        // Day counter for time-dependent worlds (a story spanning days 1, 2, 3…).
+        // 0 = off (no day is tracked / injected).
+        day: 0,
         present: [],
         // Group chats only: name of the group member card that plays the NPCs
         // (e.g. an "NPC controller" card backed by a lorebook). '' = unset.
@@ -570,6 +576,9 @@ function getSceneData() {
         chat_metadata[SCENE_META_KEY] = s;
     }
     if (typeof s.location !== 'string') s.location = '';
+    if (typeof s.time !== 'string') s.time = '';
+    if (typeof s.day !== 'number' || !Number.isFinite(s.day)) s.day = 0;
+    s.day = Math.max(0, Math.round(s.day));
     if (!Array.isArray(s.present)) s.present = [];
     if (typeof s.director !== 'string') s.director = '';
     if (typeof s.inject !== 'boolean') s.inject = true;
@@ -665,6 +674,10 @@ function buildSceneBlock(scene) {
     const lines = [];
     const location = String(scene.location || '').trim();
     if (location) lines.push(`The current scene takes place at: ${location}`);
+    const day = Number(scene.day) || 0;
+    if (day >= 1) lines.push(`Current day: Day ${day}.`);
+    const time = String(scene.time || '').trim();
+    if (time) lines.push(`Current time: ${time}`);
 
     const present = (scene.present || []).filter(p => p && String(p.name || '').trim());
     if (present.length) {
@@ -727,6 +740,7 @@ function buildSceneBlock(scene) {
             const bits = [];
             if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
             if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
+            if (String(p.clothing || '').trim()) bits.push(`wearing: ${p.clothing.trim()}`);
             if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
             if (bits.length) status.push(`- ${p.name} — ${bits.join('; ')}`);
         }
@@ -744,17 +758,22 @@ const SCENE_EXTRACT_PROMPT = [
     'You are tracking the current SCENE of a roleplay/story transcript.',
     'From the recent messages, determine the present state of the scene:',
     '- "location": a short description of where the scene is currently happening.',
+    '- "time": the current time of the scene if it can be told from the text — either a clock time (e.g. "4PM")',
+    '  or a time of day (e.g. "morning", "noon", "evening", "night"). Use "" if it is unknown.',
+    '- "dayAdvance": the number of WHOLE days that pass within these recent messages because of an explicit time',
+    '  skip (sleeping through to the next morning, "three days later", etc.). Use 0 if the scene stays on the same day.',
     '- "present": the characters/NPCs (and the user, if they are in the scene) currently in it.',
     '  For each, give: "name"; "role" (one of "user", "character", or "npc" — "character" = a main AI character, "npc" = a minor/side character);',
     '  and for non-user entries the best current "health" (e.g. healthy, wounded, exhausted),',
-    '  "condition" (any injury/soreness/status, or "" if none), and "lastLocation" (where they were last seen, or "").',
+    '  "condition" (any injury/soreness/status, or "" if none), "clothing" (what they are currently wearing, or "" if unknown),',
+    '  and "lastLocation" (where they were last seen, or "").',
     '- "left": the names of anyone who VISIBLY EXITED the scene in these recent messages — they walked out, fled,',
     '  were taken away, teleported, hung up, died, or otherwise clearly departed. List a name here ONLY when the text',
     '  shows an actual departure. Do NOT list someone merely because they stopped being mentioned — silence is not leaving.',
     'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
     '',
     'Reply with ONLY a JSON object of this exact shape:',
-    '{"location": "...", "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "lastLocation": "..."}], "left": ["..."]}',
+    '{"location": "...", "time": "...", "dayAdvance": 0, "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "lastLocation": "..."}], "left": ["..."]}',
 ].join('\n');
 
 /**
@@ -817,6 +836,15 @@ async function refreshSceneFromChat() {
     if (typeof parsed.location === 'string' && parsed.location.trim()) {
         scene.location = parsed.location.trim();
     }
+    if (typeof parsed.time === 'string' && parsed.time.trim()) {
+        scene.time = parsed.time.trim();
+    }
+    // Day only auto-advances once the user has opted in by setting a day (>= 1),
+    // and only on explicit in-text time skips — never reset or started from a scan.
+    const dayAdvance = Number(parsed.dayAdvance);
+    if (scene.day >= 1 && Number.isFinite(dayAdvance) && dayAdvance > 0) {
+        scene.day += Math.round(dayAdvance);
+    }
 
     const incoming = Array.isArray(parsed.present) ? parsed.present : [];
     const leftNames = (Array.isArray(parsed.left) ? parsed.left : [])
@@ -840,6 +868,7 @@ async function refreshSceneFromChat() {
         if (role !== 'user') {
             if (String(raw.health || '').trim()) next.health = String(raw.health).trim();
             if (String(raw.condition || '').trim()) next.condition = String(raw.condition).trim();
+            if (String(raw.clothing || '').trim()) next.clothing = String(raw.clothing).trim();
             if (String(raw.lastLocation || '').trim()) next.lastLocation = String(raw.lastLocation).trim();
         }
         if (!existing) scene.present.push(next);
@@ -1360,6 +1389,27 @@ const SCENE_WINDOW_HTML = `
             <textarea id="wf_scene_location" class="text_pole wf_scene_location" rows="4"
                 placeholder="e.g. The rain-soaked back alley behind the Copper Lantern tavern, near midnight."></textarea>
 
+            <label for="wf_scene_time" data-i18n="What time is it?">What time is it?</label>
+            <input id="wf_scene_time" class="text_pole" type="text"
+                placeholder="e.g. 4PM, or morning / noon / evening / night" />
+            <div id="wf_scene_time_presets" class="wf_scene_time_presets">
+                <span class="wf_scene_time_chip" data-time="Dawn" data-i18n="Dawn">Dawn</span>
+                <span class="wf_scene_time_chip" data-time="Morning" data-i18n="Morning">Morning</span>
+                <span class="wf_scene_time_chip" data-time="Noon" data-i18n="Noon">Noon</span>
+                <span class="wf_scene_time_chip" data-time="Afternoon" data-i18n="Afternoon">Afternoon</span>
+                <span class="wf_scene_time_chip" data-time="Evening" data-i18n="Evening">Evening</span>
+                <span class="wf_scene_time_chip" data-time="Night" data-i18n="Night">Night</span>
+                <span class="wf_scene_time_chip" data-time="Midnight" data-i18n="Midnight">Midnight</span>
+            </div>
+
+            <label for="wf_scene_day" data-i18n="Day (for stories spanning multiple days; 0 = off)">Day (for stories spanning multiple days; 0 = off)</label>
+            <div class="wf_scene_day_row">
+                <div id="wf_scene_day_dec" class="menu_button menu_button_icon" title="Previous day"><i class="fa-solid fa-minus"></i></div>
+                <input id="wf_scene_day" class="text_pole" type="number" min="0" max="100000" step="1" />
+                <div id="wf_scene_day_inc" class="menu_button menu_button_icon" title="Next day"><i class="fa-solid fa-plus"></i></div>
+            </div>
+            <small class="notes" data-i18n="Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.">Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.</small>
+
             <div id="wf_scene_director_row" style="display:none;">
                 <label for="wf_scene_director" data-i18n="World Director (group member who plays the NPCs)">World Director (group member who plays the NPCs)</label>
                 <select id="wf_scene_director" class="text_pole"></select>
@@ -1471,6 +1521,16 @@ const SCENE_CSS = `
 .wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
 .wf_scene_pane_active { display: flex; }
 .wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
+#wf_scene_time { width: 100%; box-sizing: border-box; }
+.wf_scene_time_presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.wf_scene_time_chip {
+    font-size: 0.78em; padding: 3px 9px; border-radius: 12px; cursor: pointer; user-select: none;
+    border: 1px solid var(--SmartThemeBorderColor, #555); opacity: 0.8; white-space: nowrap;
+}
+.wf_scene_time_chip:hover { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); }
+.wf_scene_time_chip.wf_scene_time_active { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); background: var(--SmartThemeQuoteColor, #6bb1ff); color: var(--SmartThemeBlurTintColor, #1f1f1f); }
+.wf_scene_day_row { display: flex; align-items: center; gap: 6px; }
+.wf_scene_day_row .text_pole { flex: 1 1 auto; min-width: 0; text-align: center; }
 #wf_scene_director_row { display: flex; flex-direction: column; gap: 4px; }
 .wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
 .wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
@@ -1749,6 +1809,7 @@ function renderPresent() {
             };
             field('health', 'Health', 'e.g. healthy, wounded');
             field('condition', 'Injury / soreness', 'e.g. sprained ankle');
+            field('clothing', 'Clothing', 'e.g. red dress, leather armor');
             field('lastLocation', 'Last known location', 'optional');
             $card.append($stats);
         }
@@ -1959,9 +2020,21 @@ function renderSceneDirector() {
     $row.show();
 }
 
+/** Highlight the time-of-day chip matching the current free-text time, if any. */
+function renderSceneTimeChips() {
+    const current = String(getSceneData().time || '').trim().toLowerCase();
+    $('.wf_scene_time_chip').each(function () {
+        const chip = String($(this).data('time') || '').toLowerCase();
+        $(this).toggleClass('wf_scene_time_active', !!chip && chip === current);
+    });
+}
+
 function renderScene() {
     const scene = getSceneData();
     $('#wf_scene_location').val(scene.location);
+    $('#wf_scene_time').val(scene.time);
+    renderSceneTimeChips();
+    $('#wf_scene_day').val(scene.day);
     $('#wf_scene_inject').prop('checked', scene.inject);
     $('#wf_scene_inject_position').val(String(scene.injectPosition));
     $('#wf_scene_inject_depth').val(scene.injectDepth);
@@ -2048,6 +2121,32 @@ function initSceneTrackerUI() {
             getSceneData().location = $(this).val();
             saveSceneData();
         });
+        $('#wf_scene_time').on('input', function () {
+            getSceneData().time = $(this).val();
+            renderSceneTimeChips();
+            saveSceneData();
+        });
+        $('#wf_scene_time_presets').on('click', '.wf_scene_time_chip', function () {
+            const value = String($(this).data('time') || '');
+            getSceneData().time = value;
+            $('#wf_scene_time').val(value);
+            renderSceneTimeChips();
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        $('#wf_scene_day').on('input', function () {
+            getSceneData().day = Math.max(0, Math.round(Number($(this).val()) || 0));
+            saveSceneData();
+        });
+        const stepDay = (delta) => {
+            const scene = getSceneData();
+            scene.day = Math.max(0, scene.day + delta);
+            $('#wf_scene_day').val(scene.day);
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        };
+        $('#wf_scene_day_dec').on('click', () => stepDay(-1));
+        $('#wf_scene_day_inc').on('click', () => stepDay(1));
         $('#wf_scene_inject').on('change', function () {
             getSceneData().inject = $(this).prop('checked');
             saveSceneData();

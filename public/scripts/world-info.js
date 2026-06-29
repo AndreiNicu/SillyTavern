@@ -67,6 +67,13 @@ export let world_info = {};
 export let selected_world_info = [];
 /** @type {string[]} */
 export let world_names;
+/**
+ * Maps a lorebook file id (name) to its assigned folder (top-level `extensions.folder`).
+ * Empty string / absent means the book is ungrouped. Used purely to group the
+ * lorebook selectors; option values remain indices into `world_names`.
+ * @type {Map<string, string>}
+ */
+let worldInfoFolders = new Map();
 export let world_info_depth = 2;
 export let world_info_min_activations = 0; // if > 0, will continue seeking chat until minimum world infos are activated
 export let world_info_min_activations_depth_max = 0; // used when (world_info_min_activations > 0)
@@ -1041,14 +1048,21 @@ export function setWorldInfoSettings(settings, data) {
         $('#world_info').empty();
     }
 
-    world_names.forEach((item, i) => {
-        $('#world_info').append(`<option value='${i}'${selected_world_info.includes(item) ? ' selected' : ''}>${item}</option>`);
-        $('#world_editor_select').append(`<option value='${i}'>${item}</option>`);
-    });
+    buildWorldInfoOptgroups($('#world_info'), (name) => selected_world_info.includes(name));
+    buildWorldInfoOptgroups($('#world_editor_select'), () => false);
 
     $('#world_info_sort_order').val(accountStorage.getItem(SORT_ORDER_KEY) || '0');
     $('#world_info').trigger('change');
     $('#world_editor_select').trigger('change');
+
+    // Folder assignments require an async fetch; re-group the selectors once available.
+    refreshWorldInfoFolders().then(() => {
+        const editorSelected = String($('#world_editor_select').find(':selected').text());
+        buildWorldInfoOptgroups($('#world_info'), (name) => selected_world_info.includes(name));
+        buildWorldInfoOptgroups($('#world_editor_select'), (name) => editorSelected === name);
+        $('#world_info').trigger('change.select2');
+        $('#world_editor_select').trigger('change.select2');
+    });
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
         const hasWorldInfo = !!chat_metadata[METADATA_KEY] && world_names.includes(chat_metadata[METADATA_KEY]);
@@ -2098,6 +2112,100 @@ export async function loadWorldInfo(name) {
     return null;
 }
 
+/**
+ * Refreshes the {@link worldInfoFolders} map from the world info list endpoint.
+ * Reads each book's top-level `extensions.folder` so the selectors can be grouped.
+ * Failure is tolerated: the existing map is left untouched.
+ * @returns {Promise<void>}
+ */
+async function refreshWorldInfoFolders() {
+    try {
+        const response = await fetch('/api/worldinfo/list', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
+
+        if (!response.ok) {
+            return;
+        }
+
+        const list = await response.json();
+        const map = new Map();
+        for (const item of Array.isArray(list) ? list : []) {
+            const folder = String(item?.extensions?.folder ?? '').trim();
+            if (item?.file_id) {
+                map.set(item.file_id, folder);
+            }
+        }
+        worldInfoFolders = map;
+    } catch (error) {
+        console.debug('[WI] Failed to refresh lorebook folders', error);
+    }
+}
+
+/**
+ * Returns the sorted list of distinct, non-empty folder names currently in use.
+ * @returns {string[]}
+ */
+function getWorldInfoFolderNames() {
+    const folders = new Set();
+    for (const folder of worldInfoFolders.values()) {
+        if (folder) {
+            folders.add(folder);
+        }
+    }
+    return Array.from(folders).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+/**
+ * Rebuilds the options of a lorebook selector, grouping books into `<optgroup>`s
+ * by their assigned folder. Ungrouped books are listed first; folders follow,
+ * sorted case-insensitively. Books keep their existing order within each group.
+ * Option values remain the index into `world_names`, so index-based lookups still work.
+ * @param {JQuery<HTMLSelectElement>} $select The select element to populate
+ * @param {(name: string, index: number) => boolean} isSelected Predicate for pre-selecting an option
+ */
+function buildWorldInfoOptgroups($select, isSelected) {
+    $select.find('option[value!=""]').remove();
+    $select.find('optgroup').remove();
+
+    const ungrouped = [];
+    /** @type {Map<string, number[]>} */
+    const byFolder = new Map();
+
+    world_names.forEach((name, i) => {
+        const folder = worldInfoFolders.get(name) || '';
+        if (!folder) {
+            ungrouped.push(i);
+            return;
+        }
+        if (!byFolder.has(folder)) {
+            byFolder.set(folder, []);
+        }
+        byFolder.get(folder).push(i);
+    });
+
+    const appendOption = (target, i) => {
+        const name = world_names[i];
+        const option = new Option(name, i.toString());
+        option.selected = isSelected(name, i);
+        $(target).append(option);
+    };
+
+    for (const i of ungrouped) {
+        appendOption($select, i);
+    }
+
+    for (const folder of Array.from(byFolder.keys()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = folder;
+        $select.append(optgroup);
+        for (const i of byFolder.get(folder)) {
+            appendOption(optgroup, i);
+        }
+    }
+}
+
 export async function updateWorldInfoList() {
     const result = await fetch('/api/settings/get', {
         method: 'POST',
@@ -2109,17 +2217,13 @@ export async function updateWorldInfoList() {
         const data = await result.json();
         const editorSelected = String($('#world_editor_select').find(':selected').text());
         world_names = data.world_names?.length ? data.world_names : [];
-        $('#world_info').find('option[value!=""]').remove();
-        $('#world_editor_select').find('option[value!=""]').remove();
+        await refreshWorldInfoFolders();
 
-        world_names.forEach((item, i) => {
-            const globalListOption = new Option(item, i.toString());
-            globalListOption.selected = selected_world_info.includes(item);
-            const editorListOption = new Option(item, i.toString());
-            editorListOption.selected = editorSelected === item;
-            $('#world_info').append(globalListOption);
-            $('#world_editor_select').append(editorListOption);
-        });
+        buildWorldInfoOptgroups($('#world_info'), (name) => selected_world_info.includes(name));
+        buildWorldInfoOptgroups($('#world_editor_select'), (name) => editorSelected === name);
+
+        $('#world_info').trigger('change.select2');
+        $('#world_editor_select').trigger('change.select2');
     }
 }
 
@@ -2361,11 +2465,36 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         $('#world_popup_delete').off('click').on('click', nullWorldInfo);
         $('#world_duplicate').off('click').on('click', nullWorldInfo);
         $('#world_lorebook_settings').hide();
+        $('#world_editor_folder').hide();
         worldEntriesList.hide();
         $('#world_info_pagination').html('');
         return;
     }
     $('#world_lorebook_settings').show();
+
+    // Folder assignment for the currently loaded lorebook (groups the selectors).
+    const $folderInput = $('#world_editor_folder');
+    $folderInput.val(String(data.extensions?.folder ?? '').trim());
+    const $folderList = $('#world_folder_datalist').empty();
+    for (const folderName of getWorldInfoFolderNames()) {
+        $folderList.append(new Option(folderName, folderName));
+    }
+    $folderInput.show();
+    $folderInput.off('change').on('change', async function () {
+        const newFolder = String($(this).val()).trim();
+        const existing = String(data.extensions?.folder ?? '').trim();
+        if (newFolder === existing) {
+            return;
+        }
+        data.extensions = data.extensions || {};
+        if (newFolder) {
+            data.extensions.folder = newFolder;
+        } else {
+            delete data.extensions.folder;
+        }
+        await saveWorldInfo(name, data, true);
+        await updateWorldInfoList();
+    });
 
     // Regardless of whether success is displayed or not. Make sure the delete button is available.
     // Do not put this code behind.

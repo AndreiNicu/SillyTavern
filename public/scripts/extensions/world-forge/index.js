@@ -967,6 +967,101 @@ function extractJsonObject(text) {
     return null;
 }
 
+// ------------------------- world calendar seed ----------------------------
+// Optional producer hand-off: a World-Forge export may carry a world-level
+// [[WORLD_CALENDAR]] lorebook entry whose JSON payload declares the world's
+// starting date, ending date (or that it is open-ended), and the weekday Day 1
+// falls on. When present, a brand-new chat's Scene Tracker seeds its date fields
+// from it. This is a graceful enhancement — worlds without the block (and older
+// exports) simply keep the manual, per-chat behavior. See the calendar block in
+// the World-Forge ⇄ Extension sync contract (contracts/WORLD_FORGE_SYNC.md).
+const WORLD_CALENDAR_MARKER = '[[WORLD_CALENDAR]]';
+
+/** Coerce arbitrary input to a 0–11 month index, or -1 when unusable. */
+function coerceMonthIndex(v) {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n >= 0 && n <= 11 ? n : -1;
+}
+
+/**
+ * Read the world's [[WORLD_CALENDAR]] block, if any. Tolerant of absence and
+ * malformed payloads: returns the parsed object or null, never throws. Expected
+ * shape (all optional, month is 0–11):
+ *   {"schema":1,"weekdayOfDay1":2,"start":{"month":5,"year":1},"end":{"month":11,"year":1}}
+ * `end` null/absent/"infinite" ⇒ the story is open-ended.
+ * @returns {Promise<Record<string, any>|null>}
+ */
+async function readWorldCalendar() {
+    let entries;
+    try {
+        entries = await getSortedEntries();
+    } catch (e) {
+        warn('world calendar: could not read world info', e);
+        return null;
+    }
+    const entry = (Array.isArray(entries) ? entries : [])
+        .find(e => e && !e.disable && String(e.comment || '').includes(WORLD_CALENDAR_MARKER));
+    if (!entry) return null;
+    const payload = extractJsonObject(String(entry.content || ''));
+    if (!payload) {
+        log('world calendar: entry found but payload was unparseable');
+        return null;
+    }
+    return payload;
+}
+
+/**
+ * Seed a brand-new chat's Scene Tracker date fields from the world's
+ * [[WORLD_CALENDAR]] block. Fires only when the user has not set up ANY date
+ * tracking yet (a pristine record), so it never clobbers hand-set values; absent
+ * or older worlds leave the manual behavior untouched.
+ */
+async function maybeSeedCalendarFromWorld() {
+    if (!getCurrentChatId()) return;
+    const scene = getSceneData();
+    const pristine = (Number(scene.day) || 0) === 0 && scene.weekdayStart === -1
+        && scene.startMonth === -1 && scene.endMonth === -1 && (Number(scene.dayLimit) || 0) === 0
+        && !scene.openEnded && !String(scene.month || '').trim();
+    if (!pristine) return;
+
+    const cal = await readWorldCalendar();
+    if (!cal) return;
+    // The chat may have changed (or the user may have started editing) while the
+    // world info was loading; only seed if it is still pristine.
+    if ((Number(scene.day) || 0) !== 0 || scene.startMonth !== -1 || scene.weekdayStart !== -1) return;
+
+    let touched = false;
+    const wd = Math.round(Number(cal.weekdayOfDay1));
+    if (Number.isFinite(wd) && wd >= 0 && wd <= 6) { scene.weekdayStart = wd; touched = true; }
+
+    const startMonth = cal.start ? coerceMonthIndex(cal.start.month) : -1;
+    if (startMonth >= 0) {
+        scene.startMonth = startMonth;
+        scene.startYear = Math.round(Number(cal.start.year)) || 1;
+        // A world that defines a calendar implies the story opens on its Day 1.
+        scene.day = 1;
+        touched = true;
+
+        const open = cal.end == null || cal.end === 'infinite';
+        if (open) {
+            scene.openEnded = true;
+        } else {
+            const endMonth = coerceMonthIndex(cal.end.month);
+            if (endMonth >= 0) {
+                scene.endMonth = endMonth;
+                scene.endYear = Math.round(Number(cal.end.year)) || scene.startYear;
+            }
+        }
+    }
+
+    if (touched) {
+        log('seeded scene calendar from world [[WORLD_CALENDAR]] block');
+        saveSceneData();
+        if (sceneOpen) renderScene();
+        updateSceneExtensionPrompt();
+    }
+}
+
 /**
  * Run the secondary LLM over recent messages and merge the result into the
  * current scene record. Location is replaced; present cast is merged by name so
@@ -2627,6 +2722,9 @@ export function init() {
     // recompute before each generation, and clear/refresh when the chat changes.
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateSceneExtensionPrompt);
     eventSource.on(event_types.CHAT_CHANGED, updateSceneExtensionPrompt);
+    // Seed the Scene Tracker's calendar from the world's [[WORLD_CALENDAR]] block
+    // on a fresh chat (no-op when absent or when the user has set dates already).
+    eventSource.on(event_types.CHAT_CHANGED, maybeSeedCalendarFromWorld);
     // Periodic presence re-scan, paced by AI messages (see maybeAutoScan). Reset
     // the per-chat cadence baseline whenever the chat changes.
     eventSource.on(event_types.MESSAGE_RECEIVED, maybeAutoScan);

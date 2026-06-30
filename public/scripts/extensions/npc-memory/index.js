@@ -48,7 +48,7 @@ const defaultSettings = {
     // Batched summarization (contract §9).
     summarize: true,
     summarizeEvery: 4,
-    summaryTokens: 200,
+    summaryTokens: 512,
     summaryProfile: '', // connection profile id; '' = use main generation API
     // Long-term memory tier (durable key moments).
     longTermMemory: true,
@@ -284,7 +284,7 @@ async function addSettingsPanel() {
         saveSettingsDebounced();
     });
     $('#npcmem_summary_tokens').val(s.summaryTokens).on('input', function () {
-        s.summaryTokens = Math.max(64, Number($(this).val()) || 200);
+        s.summaryTokens = Math.max(64, Number($(this).val()) || 512);
         saveSettingsDebounced();
     });
     renderProfileOptions(s.summaryProfile);

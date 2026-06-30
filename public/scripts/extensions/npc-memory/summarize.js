@@ -163,7 +163,7 @@ function parseFacts(text) {
 }
 
 function summaryTokens(settings) {
-    return Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 200;
+    return Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 512;
 }
 
 /**

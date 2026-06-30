@@ -1,6 +1,6 @@
 # World-Forge ⇄ Extension Sync Contract
 
-**Status:** Draft · **Version:** 1 · **Last updated:** 2026-06-28
+**Status:** Draft · **Version:** 2 · **Last updated:** 2026-06-30
 
 > **Shared contract — canonical source of truth:**
 > [`AndreiNicu/World-Forge`](https://github.com/AndreiNicu/World-Forge) → `contracts/WORLD_FORGE_SYNC.md`.
@@ -41,9 +41,9 @@ are different in kind: they are **runtime conventions** that span character-card
 metadata, SillyTavern tags, and the preset's assembled system prompt. They have
 no JSON schema and no validator, so they drift silently.
 
-Three of them (§2, §3, §4) are concrete asks of the World-Forge agents. One (§5)
-is a consumer-side improvement we plan to make on our end and only *document*
-here so the producer knows the direction.
+Four of them (§2, §3, §4, §5) are concrete asks of the World-Forge agents. One
+(§6) is a consumer-side improvement we plan to make on our end and only
+*document* here so the producer knows the direction.
 
 ---
 
@@ -161,7 +161,77 @@ reverts to the world default.
 
 ---
 
-## 5. Consumer-side direction (informative — not an ask)
+## 5. World calendar (Scene Tracker date seed)
+
+Optional, like every seam here; absent ⇒ the Scene Tracker's manual, per-chat
+date behavior is unchanged and existing worlds are unaffected.
+
+### 5.1 The dependency
+
+The `world-forge` extension's **Scene Tracker** can track a full in-world date —
+a weekday tied to a day counter, an anchored month/year that rolls over by real
+month lengths, and a story horizon (`Day X of N` / open-ended). On a brand-new
+chat it will **seed** all of that from a world-level `[[WORLD_CALENDAR]]` lorebook
+entry if the world ships one (`readWorldCalendar()` / `maybeSeedCalendarFromWorld()`
+in `public/scripts/extensions/world-forge/index.js`). Seeding touches only a
+**pristine** scene record, so it never clobbers hand-set values; a missing or
+malformed block is a silent no-op.
+
+### 5.2 The carrier
+
+One world-level World Info entry whose `comment` contains the marker token
+`[[WORLD_CALENDAR]]` (mirroring `[[NPC_MANIFEST]]`); its `content` is a single
+JSON object. At most one per world — if several are present, the first wins.
+
+> **Carrier flag — differs from `[[NPC_MANIFEST]]`, and the difference is
+> load-bearing.** The Scene Tracker reads candidate entries from
+> `getSortedEntries()` and **rejects any with `disable: true`**
+> (`.find(e => e && !e.disable && …)`). So unlike the memory manifest — which is
+> emitted `disable: true` and read out of the raw world-info data — the calendar
+> carrier MUST be **enabled** (`disable: false`). To keep an enabled entry inert
+> (never injected into the prompt), give it `key: []` and `constant: false`: with
+> no keys and not constant it never activates, yet it remains visible to
+> `getSortedEntries()`. A `[[WORLD_CALENDAR]]` emitted `disable: true` is silently
+> skipped and the world seeds nothing.
+
+### 5.3 Payload
+
+```jsonc
+{
+  "schema": 1,                        // consumer reads what it knows, ignores the rest
+  "weekdayOfDay1": 2,                 // 0=Sun … 6=Sat; omit/null = no weekday
+  "start": { "month": 5, "year": 1 }, // month 0–11 (5 = June). Day 1 = the 1st of this month/year
+  "end":   { "month": 11, "year": 1 } // last day of this month/year = the conclusion
+}
+```
+
+| Path | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `schema` | int | yes | Contract version of this payload (currently `1`). |
+| `weekdayOfDay1` | int 0–6 | no | Weekday Day 1 falls on (0 = Sunday). **Independent of `start`**, so fictional calendars work. Omit/null ⇒ no weekday shown. |
+| `start` | object | no | `{ "month": 0–11, "year": int }`. Day 1 = the 1st of this month/year; the current month/year then derive from the day counter. Absent/null ⇒ no calendar (free-form month label). |
+| `end` | object \| null \| `"infinite"` | no | `{ "month": 0–11, "year": int }` whose last day is the conclusion. null / `"infinite"` / omitted ⇒ **open-ended** (days keep counting, no `of N`, no conclusion note). |
+
+- `month` is **0-indexed** (0 = January … 11 = December), matching the consumer.
+- The consumer is forward-compatible on `schema` and tolerant of absence/garbage:
+  it reads the fields it recognizes and no-ops on anything malformed.
+
+### 5.4 The ask
+
+- When the world's brief fixes a **start date** plus either an **end date** or
+  **open-ended**, the Architect/Compiler **SHOULD** emit one `[[WORLD_CALENDAR]]`
+  entry in the **World (Tier 1) lorebook**, enabled-but-inert per §5.2, with the
+  §5.3 payload. Worlds with no fixed calendar emit nothing.
+- The marker, the `disable: false` flag, and 0-indexed months are the
+  load-bearing literals — emit them exactly.
+
+> Consumer behavior without it: the Scene Tracker keeps its manual per-chat date
+> fields (default off); nothing errors and nothing appears in the prompt until the
+> user sets a Day by hand.
+
+---
+
+## 6. Consumer-side direction (informative — not an ask)
 
 The `world-forge` extension's Scene Tracker currently re-derives each present
 person's `role` (`user` / `character` / `npc`) and the player persona by **LLM
@@ -180,21 +250,24 @@ that manifest data becomes the Scene Tracker's source of truth once adopted.
 
 ---
 
-## 6. Producer conformance checklist (World-Forge agents)
+## 7. Producer conformance checklist (World-Forge agents)
 
 - [ ] Director / NPC-host cards carry a recognized tag from §2.1, surviving export.
 - [ ] Director card tag agrees with manifest `lorebook.kind: "director"`.
 - [ ] Every `npcs[].aliases` includes the bare first name + nicknames used in prose (§3).
 - [ ] Preset Main Prompt emits `</style_contract>` verbatim, no attributes (§4).
+- [ ] (If the world fixes a start date) one `[[WORLD_CALENDAR]]` entry in the World
+      lorebook, **enabled** (`disable: false`) + inert (`key: []`, `constant: false`),
+      0-indexed months, per §5.
 - [ ] (Already met) `[[NPC_MANIFEST]]` + facets + scenes per `MEMORY_CONTRACT.md`.
 - [ ] (Already met) `<style_override>` via `extensions.world_forge.style_override` (v2 directives array).
 
-## 7. Relationship to `MEMORY_CONTRACT.md`
+## 8. Relationship to `MEMORY_CONTRACT.md`
 
 | Concern | Governed by |
 | --- | --- |
 | NPC manifest, facets, ids, turn tag, scenes registry | `MEMORY_CONTRACT.md` |
-| Director-card tag, scene-name reconciliation, `</style_contract>` marker, `style_override` runtime | this document |
+| Director-card tag, scene-name reconciliation, `</style_contract>` marker, `style_override` runtime, `[[WORLD_CALENDAR]]` date seed | this document |
 
 The two are independently versioned. A producer that satisfies both is fully
 cohesive with the `npc-memory` and `world-forge` extensions in this fork.

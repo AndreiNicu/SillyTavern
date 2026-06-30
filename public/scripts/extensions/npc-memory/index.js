@@ -283,6 +283,10 @@ async function addSettingsPanel() {
         s.summarizeEvery = Math.max(1, Number($(this).val()) || 1);
         saveSettingsDebounced();
     });
+    $('#npcmem_summary_tokens').val(s.summaryTokens).on('input', function () {
+        s.summaryTokens = Math.max(64, Number($(this).val()) || 200);
+        saveSettingsDebounced();
+    });
     renderProfileOptions(s.summaryProfile);
     $('#npcmem_summary_profile').on('change', function () {
         s.summaryProfile = String($(this).val() || '');

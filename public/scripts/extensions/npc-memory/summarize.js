@@ -119,7 +119,11 @@ async function extractLongTerm(ctx, name, existing, evs, who, settings) {
         'From the roleplay events below, extract any LASTING, significant moments worth remembering ' +
         `permanently about ${name}: promises, declarations, confessions, decisions, revelations, ` +
         `important personal facts, and changes in their relationship with ${who}. ` +
-        'Ignore small talk, mood, and routine actions. ' +
+        'Also keep CHARGED interpersonal beats even when they read as casual or flirtatious: ' +
+        `moments of attraction or tension, things ${name} notices about ${who} (or notices ${who} ` +
+        `noticing), and anything ${name} could later use as leverage or hold over ${who}. ` +
+        'Ignore only true filler — ambient scenery, idle small talk, and routine actions with no ' +
+        'lasting consequence. When in doubt about an interpersonal beat, keep it. ' +
         'Output each as its own short, self-contained line in past tense (no bullets, no preamble). ' +
         'If there is nothing genuinely significant and new, reply with exactly: NONE';
     const out = await requestLLM(ctx, settings, `${instruction}\n\n${known}Events (oldest first):\n${lines}`, summaryTokens(settings), name);

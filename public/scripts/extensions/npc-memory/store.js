@@ -172,6 +172,20 @@ const MAX_LONGTERM = 30;
 const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 /**
+ * Detect a provider/proxy error notice returned in place of real content — e.g.
+ * a "thinking" model whose internal reasoning was truncated by too small a token
+ * budget. Such text must never be stored as a memory. Conservative on purpose:
+ * matches distinctive failure phrasings, not anything merely bracketed.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isErrorNotice(text) {
+    const s = String(text ?? '');
+    if (!s) return false;
+    return /response was truncated|increase max_?tokens|enable_thinking|internal reasoning|finished its internal|max_?tokens, or disable/i.test(s);
+}
+
+/**
  * Append durable long-term memories to an NPC, deduped against existing ones.
  * @param {string} id
  * @param {string[]} texts   One-line key facts/moments.
@@ -184,7 +198,7 @@ export function addLongTerm(id, texts, meta = {}) {
     let added = 0;
     for (const t of texts) {
         const text = String(t ?? '').trim();
-        if (!text || seen.has(norm(text))) continue;
+        if (!text || isErrorNotice(text) || seen.has(norm(text))) continue;
         seen.add(norm(text));
         rec.longTerm.push({ ts: Date.now(), text, source: meta.source || 'summary' });
         added++;

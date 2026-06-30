@@ -538,7 +538,13 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 const SCENE_ABSENCE_GRACE = 3;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
-/** @typedef {{location: string, time: string, day: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{location: string, time: string, day: number, dayLimit: number, weekdayStart: number, month: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+
+// Weekday names, indexed to match the day-of-week anchor (weekdayStart). The
+// weekday shown for a given day is derived purely from the day counter and this
+// anchor, so it stays consistent as the story spans days without the model
+// having to track it.
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 /** @returns {SceneData} */
 function defaultSceneData() {
@@ -550,6 +556,17 @@ function defaultSceneData() {
         // Day counter for time-dependent worlds (a story spanning days 1, 2, 3…).
         // 0 = off (no day is tracked / injected).
         day: 0,
+        // Day limit for the world — the day the roleplay is meant to conclude on
+        // (e.g. "Day 1 of 30"). 0 = off (no limit / horizon shown).
+        dayLimit: 0,
+        // The weekday Day 1 falls on, as an index into WEEKDAYS. The weekday of
+        // the current day is derived from this anchor + the day counter, so e.g.
+        // weekdayStart = 2 (Tuesday) means Day 1 is Tuesday, Day 2 Wednesday, …
+        // -1 = off (no weekday is derived / shown).
+        weekdayStart: -1,
+        // Free-form month of the current scene (e.g. "June", or a fantasy month
+        // name). Settable and updated by scans like `time`. '' = unset.
+        month: '',
         present: [],
         // Group chats only: name of the group member card that plays the NPCs
         // (e.g. an "NPC controller" card backed by a lorebook). '' = unset.
@@ -579,6 +596,12 @@ function getSceneData() {
     if (typeof s.time !== 'string') s.time = '';
     if (typeof s.day !== 'number' || !Number.isFinite(s.day)) s.day = 0;
     s.day = Math.max(0, Math.round(s.day));
+    if (typeof s.dayLimit !== 'number' || !Number.isFinite(s.dayLimit)) s.dayLimit = 0;
+    s.dayLimit = Math.max(0, Math.min(100000, Math.round(s.dayLimit)));
+    if (typeof s.weekdayStart !== 'number' || !Number.isFinite(s.weekdayStart)) s.weekdayStart = -1;
+    s.weekdayStart = Math.round(s.weekdayStart);
+    if (s.weekdayStart < 0 || s.weekdayStart > 6) s.weekdayStart = -1;
+    if (typeof s.month !== 'string') s.month = '';
     if (!Array.isArray(s.present)) s.present = [];
     if (typeof s.director !== 'string') s.director = '';
     if (typeof s.inject !== 'boolean') s.inject = true;
@@ -606,6 +629,20 @@ function saveSceneData() {
             warn('saveMetadata failed', e);
         }
     }, 400);
+}
+
+/**
+ * The weekday name for the scene's current day, derived from the day counter and
+ * the day-of-week anchor (weekdayStart = the weekday Day 1 falls on). Returns ''
+ * when no day is tracked or no anchor is set.
+ * @param {SceneData} scene
+ * @returns {string}
+ */
+function weekdayForDay(scene) {
+    const day = Number(scene.day) || 0;
+    const start = Number(scene.weekdayStart);
+    if (day < 1 || !Number.isFinite(start) || start < 0 || start > 6) return '';
+    return WEEKDAYS[(((start + (day - 1)) % 7) + 7) % 7];
 }
 
 /** "Anna", "Anna and Tom", "Anna, Mira and Tom". */
@@ -675,7 +712,21 @@ function buildSceneBlock(scene) {
     const location = String(scene.location || '').trim();
     if (location) lines.push(`The current scene takes place at: ${location}`);
     const day = Number(scene.day) || 0;
-    if (day >= 1) lines.push(`Current day: Day ${day}.`);
+    if (day >= 1) {
+        const limit = Number(scene.dayLimit) || 0;
+        const weekday = weekdayForDay(scene);
+        const dayPart = `Day ${day}${limit >= 1 ? ` of ${limit}` : ''}`;
+        lines.push(`Current day: ${weekday ? `${weekday}, ${dayPart}` : dayPart}.`);
+        if (limit >= 1) {
+            if (day >= limit) {
+                lines.push('This is the final day — bring the story toward its conclusion.');
+            } else {
+                lines.push(`The story is set to conclude on Day ${limit}; pace events accordingly.`);
+            }
+        }
+    }
+    const month = String(scene.month || '').trim();
+    if (month) lines.push(`Current month: ${month}.`);
     const time = String(scene.time || '').trim();
     if (time) lines.push(`Current time: ${time}`);
 
@@ -760,6 +811,7 @@ const SCENE_EXTRACT_PROMPT = [
     '- "location": a short description of where the scene is currently happening.',
     '- "time": the current time of the scene if it can be told from the text — either a clock time (e.g. "4PM")',
     '  or a time of day (e.g. "morning", "noon", "evening", "night"). Use "" if it is unknown.',
+    '- "month": the current month if it can be told from the text (e.g. "June", or a fantasy month name). Use "" if it is unknown.',
     '- "dayAdvance": the number of WHOLE days that pass within these recent messages because of an explicit time',
     '  skip (sleeping through to the next morning, "three days later", etc.). Use 0 if the scene stays on the same day.',
     '- "present": the characters/NPCs (and the user, if they are in the scene) currently in it.',
@@ -773,7 +825,7 @@ const SCENE_EXTRACT_PROMPT = [
     'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
     '',
     'Reply with ONLY a JSON object of this exact shape:',
-    '{"location": "...", "time": "...", "dayAdvance": 0, "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "lastLocation": "..."}], "left": ["..."]}',
+    '{"location": "...", "time": "...", "month": "...", "dayAdvance": 0, "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "lastLocation": "..."}], "left": ["..."]}',
 ].join('\n');
 
 /**
@@ -838,6 +890,9 @@ async function refreshSceneFromChat() {
     }
     if (typeof parsed.time === 'string' && parsed.time.trim()) {
         scene.time = parsed.time.trim();
+    }
+    if (typeof parsed.month === 'string' && parsed.month.trim()) {
+        scene.month = parsed.month.trim();
     }
     // Day only auto-advances once the user has opted in by setting a day (>= 1),
     // and only on explicit in-text time skips — never reset or started from a scan.
@@ -1402,6 +1457,24 @@ const SCENE_WINDOW_HTML = `
                 <span class="wf_scene_time_chip" data-time="Midnight" data-i18n="Midnight">Midnight</span>
             </div>
 
+            <label for="wf_scene_month" data-i18n="What month is it?">What month is it?</label>
+            <input id="wf_scene_month" class="text_pole" type="text"
+                placeholder="e.g. June, or a custom month name" />
+            <div id="wf_scene_month_presets" class="wf_scene_month_presets">
+                <span class="wf_scene_month_chip" data-month="January" data-i18n="January">January</span>
+                <span class="wf_scene_month_chip" data-month="February" data-i18n="February">February</span>
+                <span class="wf_scene_month_chip" data-month="March" data-i18n="March">March</span>
+                <span class="wf_scene_month_chip" data-month="April" data-i18n="April">April</span>
+                <span class="wf_scene_month_chip" data-month="May" data-i18n="May">May</span>
+                <span class="wf_scene_month_chip" data-month="June" data-i18n="June">June</span>
+                <span class="wf_scene_month_chip" data-month="July" data-i18n="July">July</span>
+                <span class="wf_scene_month_chip" data-month="August" data-i18n="August">August</span>
+                <span class="wf_scene_month_chip" data-month="September" data-i18n="September">September</span>
+                <span class="wf_scene_month_chip" data-month="October" data-i18n="October">October</span>
+                <span class="wf_scene_month_chip" data-month="November" data-i18n="November">November</span>
+                <span class="wf_scene_month_chip" data-month="December" data-i18n="December">December</span>
+            </div>
+
             <label for="wf_scene_day" data-i18n="Day (for stories spanning multiple days; 0 = off)">Day (for stories spanning multiple days; 0 = off)</label>
             <div class="wf_scene_day_row">
                 <div id="wf_scene_day_dec" class="menu_button menu_button_icon" title="Previous day"><i class="fa-solid fa-minus"></i></div>
@@ -1409,6 +1482,27 @@ const SCENE_WINDOW_HTML = `
                 <div id="wf_scene_day_inc" class="menu_button menu_button_icon" title="Next day"><i class="fa-solid fa-plus"></i></div>
             </div>
             <small class="notes" data-i18n="Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.">Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.</small>
+
+            <div class="wf_scene_date_grid">
+                <div class="wf_scene_date_field">
+                    <label for="wf_scene_weekday" data-i18n="Day 1 is a…">Day 1 is a…</label>
+                    <select id="wf_scene_weekday" class="text_pole">
+                        <option value="-1" data-i18n="Off">Off</option>
+                        <option value="0" data-i18n="Sunday">Sunday</option>
+                        <option value="1" data-i18n="Monday">Monday</option>
+                        <option value="2" data-i18n="Tuesday">Tuesday</option>
+                        <option value="3" data-i18n="Wednesday">Wednesday</option>
+                        <option value="4" data-i18n="Thursday">Thursday</option>
+                        <option value="5" data-i18n="Friday">Friday</option>
+                        <option value="6" data-i18n="Saturday">Saturday</option>
+                    </select>
+                </div>
+                <div class="wf_scene_date_field">
+                    <label for="wf_scene_day_limit" data-i18n="Day limit (end of story; 0 = off)">Day limit (end of story; 0 = off)</label>
+                    <input id="wf_scene_day_limit" class="text_pole" type="number" min="0" max="100000" step="1" />
+                </div>
+            </div>
+            <small id="wf_scene_date_preview" class="notes wf_scene_date_preview"></small>
 
             <div id="wf_scene_director_row" style="display:none;">
                 <label for="wf_scene_director" data-i18n="World Director (group member who plays the NPCs)">World Director (group member who plays the NPCs)</label>
@@ -1521,16 +1615,20 @@ const SCENE_CSS = `
 .wf_scene_pane { display: none; flex-direction: column; gap: 8px; }
 .wf_scene_pane_active { display: flex; }
 .wf_scene_location { width: 100%; box-sizing: border-box; resize: vertical; }
-#wf_scene_time { width: 100%; box-sizing: border-box; }
-.wf_scene_time_presets { display: flex; flex-wrap: wrap; gap: 6px; }
-.wf_scene_time_chip {
+#wf_scene_time, #wf_scene_month { width: 100%; box-sizing: border-box; }
+.wf_scene_time_presets, .wf_scene_month_presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.wf_scene_time_chip, .wf_scene_month_chip {
     font-size: 0.78em; padding: 3px 9px; border-radius: 12px; cursor: pointer; user-select: none;
     border: 1px solid var(--SmartThemeBorderColor, #555); opacity: 0.8; white-space: nowrap;
 }
-.wf_scene_time_chip:hover { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); }
-.wf_scene_time_chip.wf_scene_time_active { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); background: var(--SmartThemeQuoteColor, #6bb1ff); color: var(--SmartThemeBlurTintColor, #1f1f1f); }
+.wf_scene_time_chip:hover, .wf_scene_month_chip:hover { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); }
+.wf_scene_time_chip.wf_scene_time_active, .wf_scene_month_chip.wf_scene_month_active { opacity: 1; border-color: var(--SmartThemeQuoteColor, #6bb1ff); background: var(--SmartThemeQuoteColor, #6bb1ff); color: var(--SmartThemeBlurTintColor, #1f1f1f); }
 .wf_scene_day_row { display: flex; align-items: center; gap: 6px; }
 .wf_scene_day_row .text_pole { flex: 1 1 auto; min-width: 0; text-align: center; }
+.wf_scene_date_grid { display: flex; gap: 10px; flex-wrap: wrap; }
+.wf_scene_date_field { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wf_scene_date_preview { font-style: italic; opacity: 0.85; }
+.wf_scene_date_preview:empty { display: none; }
 #wf_scene_director_row { display: flex; flex-direction: column; gap: 4px; }
 .wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
 .wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
@@ -2029,12 +2127,40 @@ function renderSceneTimeChips() {
     });
 }
 
+/** Highlight the month chip matching the current free-text month, if any. */
+function renderSceneMonthChips() {
+    const current = String(getSceneData().month || '').trim().toLowerCase();
+    $('.wf_scene_month_chip').each(function () {
+        const chip = String($(this).data('month') || '').toLowerCase();
+        $(this).toggleClass('wf_scene_month_active', !!chip && chip === current);
+    });
+}
+
+/** Live "→ Tuesday, Day 1 of 30" preview under the date controls. */
+function renderSceneDatePreview() {
+    const scene = getSceneData();
+    const day = Number(scene.day) || 0;
+    let text = '';
+    if (day >= 1) {
+        const limit = Number(scene.dayLimit) || 0;
+        const weekday = weekdayForDay(scene);
+        const dayPart = `Day ${day}${limit >= 1 ? ` of ${limit}` : ''}`;
+        text = `→ ${weekday ? `${weekday}, ${dayPart}` : dayPart}`;
+    }
+    $('#wf_scene_date_preview').text(text);
+}
+
 function renderScene() {
     const scene = getSceneData();
     $('#wf_scene_location').val(scene.location);
     $('#wf_scene_time').val(scene.time);
     renderSceneTimeChips();
+    $('#wf_scene_month').val(scene.month);
+    renderSceneMonthChips();
     $('#wf_scene_day').val(scene.day);
+    $('#wf_scene_day_limit').val(scene.dayLimit);
+    $('#wf_scene_weekday').val(String(scene.weekdayStart));
+    renderSceneDatePreview();
     $('#wf_scene_inject').prop('checked', scene.inject);
     $('#wf_scene_inject_position').val(String(scene.injectPosition));
     $('#wf_scene_inject_depth').val(scene.injectDepth);
@@ -2134,14 +2260,42 @@ function initSceneTrackerUI() {
             saveSceneData();
             updateSceneExtensionPrompt();
         });
+        $('#wf_scene_month').on('input', function () {
+            getSceneData().month = $(this).val();
+            renderSceneMonthChips();
+            saveSceneData();
+        });
+        $('#wf_scene_month_presets').on('click', '.wf_scene_month_chip', function () {
+            const value = String($(this).data('month') || '');
+            getSceneData().month = value;
+            $('#wf_scene_month').val(value);
+            renderSceneMonthChips();
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
         $('#wf_scene_day').on('input', function () {
             getSceneData().day = Math.max(0, Math.round(Number($(this).val()) || 0));
+            renderSceneDatePreview();
             saveSceneData();
+        });
+        $('#wf_scene_day_limit').on('input', function () {
+            getSceneData().dayLimit = Math.max(0, Math.min(100000, Math.round(Number($(this).val()) || 0)));
+            renderSceneDatePreview();
+            saveSceneData();
+        });
+        $('#wf_scene_weekday').on('change', function () {
+            let v = Math.round(Number($(this).val()));
+            if (!Number.isFinite(v) || v < 0 || v > 6) v = -1;
+            getSceneData().weekdayStart = v;
+            renderSceneDatePreview();
+            saveSceneData();
+            updateSceneExtensionPrompt();
         });
         const stepDay = (delta) => {
             const scene = getSceneData();
             scene.day = Math.max(0, scene.day + delta);
             $('#wf_scene_day').val(scene.day);
+            renderSceneDatePreview();
             saveSceneData();
             updateSceneExtensionPrompt();
         };

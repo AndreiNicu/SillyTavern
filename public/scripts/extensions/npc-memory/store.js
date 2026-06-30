@@ -103,8 +103,12 @@ export async function saveNow() {
 const MAX_EVENTS = 50;
 /** Max characters kept in a slot summary snippet (placeholder display). */
 const SUMMARY_LEN = 220;
-/** Max characters of cleaned prose retained per event (summarizer input). */
-const EVENT_TEXT_LEN = 600;
+/** Max characters of cleaned prose retained per event (summarizer input).
+ * A full roleplay message often runs well past a thousand characters; keep
+ * enough that a beat appearing in the back half of a message (e.g. an NPC
+ * noticing {{user}} mid-scene) still reaches the summarizer instead of being
+ * truncated away before it can become a durable memory. */
+const EVENT_TEXT_LEN = 2000;
 
 /**
  * Condense message prose into a single line: drop markdown emphasis and quotes,

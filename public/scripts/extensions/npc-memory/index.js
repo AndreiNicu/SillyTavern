@@ -48,7 +48,7 @@ const defaultSettings = {
     // Batched summarization (contract §9).
     summarize: true,
     summarizeEvery: 4,
-    summaryTokens: 200,
+    summaryTokens: 512,
     summaryProfile: '', // connection profile id; '' = use main generation API
     // Long-term memory tier (durable key moments).
     longTermMemory: true,
@@ -231,7 +231,13 @@ async function compressNow() {
         toast(`Too few messages to compress (${total}). Need at least ${MIN_COMPRESS_MESSAGES} for a useful recap.`);
         return;
     }
-    const res = await compressChat(ctx, settings());
+    const done = progressToast('Compressing chat… summarizing memory.');
+    let res;
+    try {
+        res = await compressChat(ctx, settings());
+    } finally {
+        done();
+    }
     if (res.ok) toast(`Compressed ${res.hidden} message(s) into a recap; kept the last ${res.kept} for context.`);
     else toast(`Nothing compressed (${res.reason}).`);
     updateStatusUI();
@@ -283,6 +289,10 @@ async function addSettingsPanel() {
         s.summarizeEvery = Math.max(1, Number($(this).val()) || 1);
         saveSettingsDebounced();
     });
+    $('#npcmem_summary_tokens').val(s.summaryTokens).on('input', function () {
+        s.summaryTokens = Math.max(64, Number($(this).val()) || 512);
+        saveSettingsDebounced();
+    });
     renderProfileOptions(s.summaryProfile);
     $('#npcmem_summary_profile').on('change', function () {
         s.summaryProfile = String($(this).val() || '');
@@ -329,22 +339,40 @@ async function rescanMemory() {
     );
     if (!confirmed) return;
 
-    clearAll();
+    const done = progressToast('Rescanning… reinitializing NPC memory.');
     let captured = 0;
-    for (let i = start; i < chat.length; i++) {
-        const m = chat[i];
-        if (!m || m.is_user || m.is_system) continue;
-        if (captureFromMessage(i, index, settings(), ctx, true)) captured++;
-    }
+    try {
+        clearAll();
+        for (let i = start; i < chat.length; i++) {
+            const m = chat[i];
+            if (!m || m.is_user || m.is_system) continue;
+            if (captureFromMessage(i, index, settings(), ctx, true)) captured++;
+        }
 
-    if (settings().summarize && captured > 0) {
-        const personaName = ctx?.name1 || index.personas?.user?.name || '';
-        await runBatchSummary(ctx, settings(), personaName);
+        if (settings().summarize && captured > 0) {
+            const personaName = ctx?.name1 || index.personas?.user?.name || '';
+            await runBatchSummary(ctx, settings(), personaName);
+        }
+        resetPending();
+        saveStore();
+    } finally {
+        done();
     }
-    resetPending();
-    saveStore();
     updateStatusUI();
     toast(`Rescanned ${captured} message(s); memory reinitialized.`);
+}
+
+/**
+ * Show a sticky "in progress" toast for a long-running action. Returns a
+ * function that dismisses it (call when the action finishes, before the
+ * "done" toast). No-ops gracefully if toastr is unavailable.
+ * @param {string} msg
+ * @returns {() => void}
+ */
+function progressToast(msg) {
+    if (typeof toastr === 'undefined') { console.info(`${LOG} ${msg}`); return () => {}; }
+    const el = toastr.info(msg, 'NPC Memory', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false });
+    return () => { try { toastr.clear(el); } catch { /* noop */ } };
 }
 
 function toast(msg) {

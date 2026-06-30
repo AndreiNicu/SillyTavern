@@ -538,13 +538,26 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 const SCENE_ABSENCE_GRACE = 3;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
-/** @typedef {{location: string, time: string, day: number, dayLimit: number, weekdayStart: number, month: string, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{location: string, time: string, day: number, dayLimit: number, openEnded: boolean, weekdayStart: number, month: string, startMonth: number, startYear: number, endMonth: number, endYear: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 // Weekday names, indexed to match the day-of-week anchor (weekdayStart). The
 // weekday shown for a given day is derived purely from the day counter and this
 // anchor, so it stays consistent as the story spans days without the model
 // having to track it.
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// Month names, indexed 0–11, for the anchored-calendar mode (startMonth/endMonth).
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** Days in a given month, honouring Gregorian leap years for February. */
+function daysInMonth(year, month) {
+    if (month === 1) {
+        const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+        return leap ? 29 : 28;
+    }
+    return MONTH_DAYS[((month % 12) + 12) % 12];
+}
 
 /** @returns {SceneData} */
 function defaultSceneData() {
@@ -557,16 +570,33 @@ function defaultSceneData() {
         // 0 = off (no day is tracked / injected).
         day: 0,
         // Day limit for the world — the day the roleplay is meant to conclude on
-        // (e.g. "Day 1 of 30"). 0 = off (no limit / horizon shown).
+        // (e.g. "Day 1 of 30"). 0 = off (no limit / horizon shown). Used only when
+        // the anchored calendar is off; with a calendar the horizon is the end
+        // month/year below. Ignored entirely when openEnded is true.
         dayLimit: 0,
+        // Open-ended story: days (and the calendar) keep counting, but no horizon
+        // or "of N" / conclusion note is ever shown. For infinite roleplays.
+        openEnded: false,
         // The weekday Day 1 falls on, as an index into WEEKDAYS. The weekday of
         // the current day is derived from this anchor + the day counter, so e.g.
         // weekdayStart = 2 (Tuesday) means Day 1 is Tuesday, Day 2 Wednesday, …
         // -1 = off (no weekday is derived / shown).
         weekdayStart: -1,
         // Free-form month of the current scene (e.g. "June", or a fantasy month
-        // name). Settable and updated by scans like `time`. '' = unset.
+        // name). Settable and updated by scans like `time`. '' = unset. Used only
+        // when the anchored calendar (startMonth) is off; otherwise the month is
+        // derived from the day counter.
         month: '',
+        // Anchored calendar: when startMonth is a real month (0–11), Day 1 is the
+        // 1st of that month/year and the current month/year are DERIVED from the
+        // day counter (months roll over by their real lengths). -1 = off (use the
+        // free-form `month` label instead).
+        startMonth: -1,
+        startYear: 1,
+        // Calendar horizon: the month/year the story is set to conclude in (the
+        // last day of that month). -1 = off (no horizon from the calendar).
+        endMonth: -1,
+        endYear: 1,
         present: [],
         // Group chats only: name of the group member card that plays the NPCs
         // (e.g. an "NPC controller" card backed by a lorebook). '' = unset.
@@ -598,10 +628,21 @@ function getSceneData() {
     s.day = Math.max(0, Math.round(s.day));
     if (typeof s.dayLimit !== 'number' || !Number.isFinite(s.dayLimit)) s.dayLimit = 0;
     s.dayLimit = Math.max(0, Math.min(100000, Math.round(s.dayLimit)));
+    if (typeof s.openEnded !== 'boolean') s.openEnded = false;
     if (typeof s.weekdayStart !== 'number' || !Number.isFinite(s.weekdayStart)) s.weekdayStart = -1;
     s.weekdayStart = Math.round(s.weekdayStart);
     if (s.weekdayStart < 0 || s.weekdayStart > 6) s.weekdayStart = -1;
     if (typeof s.month !== 'string') s.month = '';
+    if (typeof s.startMonth !== 'number' || !Number.isFinite(s.startMonth)) s.startMonth = -1;
+    s.startMonth = Math.round(s.startMonth);
+    if (s.startMonth < 0 || s.startMonth > 11) s.startMonth = -1;
+    if (typeof s.startYear !== 'number' || !Number.isFinite(s.startYear)) s.startYear = 1;
+    s.startYear = Math.round(s.startYear);
+    if (typeof s.endMonth !== 'number' || !Number.isFinite(s.endMonth)) s.endMonth = -1;
+    s.endMonth = Math.round(s.endMonth);
+    if (s.endMonth < 0 || s.endMonth > 11) s.endMonth = -1;
+    if (typeof s.endYear !== 'number' || !Number.isFinite(s.endYear)) s.endYear = 1;
+    s.endYear = Math.round(s.endYear);
     if (!Array.isArray(s.present)) s.present = [];
     if (typeof s.director !== 'string') s.director = '';
     if (typeof s.inject !== 'boolean') s.inject = true;
@@ -643,6 +684,68 @@ function weekdayForDay(scene) {
     const start = Number(scene.weekdayStart);
     if (day < 1 || !Number.isFinite(start) || start < 0 || start > 6) return '';
     return WEEKDAYS[(((start + (day - 1)) % 7) + 7) % 7];
+}
+
+/** True when the anchored calendar is in use (a start month is set and a day is tracked). */
+function calendarActive(scene) {
+    return Number(scene.startMonth) >= 0 && Number(scene.startMonth) <= 11 && (Number(scene.day) || 0) >= 1;
+}
+
+/**
+ * The derived calendar date for the scene's current day, anchoring Day 1 to the
+ * 1st of the start month/year and walking forward (day − 1) days through real
+ * month lengths. Returns {year, month, dom} (month 0–11), or null when the
+ * calendar is off. Day-of-month is computed to roll months over correctly even
+ * though the injected block only surfaces the month and year.
+ * @param {SceneData} scene
+ */
+function calendarDateForDay(scene) {
+    if (!calendarActive(scene)) return null;
+    let year = Number(scene.startYear) || 0;
+    let month = Number(scene.startMonth);
+    let offset = (Number(scene.day) || 0) - 1; // days past the 1st
+    // Bounded walk so a runaway day counter can never spin forever.
+    for (let guard = 0; guard < 200000 && offset >= daysInMonth(year, month); guard++) {
+        offset -= daysInMonth(year, month);
+        month++;
+        if (month > 11) { month = 0; year++; }
+    }
+    return { year, month, dom: offset + 1 };
+}
+
+/**
+ * The day number on which an anchored-calendar story concludes — the last day of
+ * the end month/year, counted from Day 1 = the 1st of the start month/year.
+ * Returns 0 when there is no calendar horizon, or when the end precedes the start.
+ * @param {SceneData} scene
+ */
+function calendarDayLimit(scene) {
+    if (!calendarActive(scene)) return 0;
+    if (Number(scene.endMonth) < 0 || Number(scene.endMonth) > 11) return 0;
+    let year = Number(scene.startYear) || 0;
+    let month = Number(scene.startMonth);
+    const endYear = Number(scene.endYear) || 0;
+    const endMonth = Number(scene.endMonth);
+    if (endYear < year || (endYear === year && endMonth < month)) return 0; // end before start
+    let count = 0;
+    for (let guard = 0; guard < 200000 && !(year === endYear && month === endMonth); guard++) {
+        count += daysInMonth(year, month);
+        month++;
+        if (month > 11) { month = 0; year++; }
+    }
+    return count + daysInMonth(endYear, endMonth); // include the full end month
+}
+
+/**
+ * The horizon day count actually shown as "Day X of N", or 0 when there is none.
+ * Open-ended stories have no horizon; otherwise the calendar's end date wins when
+ * a calendar is active, falling back to the manual day limit.
+ * @param {SceneData} scene
+ */
+function effectiveDayLimit(scene) {
+    if (scene.openEnded) return 0;
+    if (calendarActive(scene)) return calendarDayLimit(scene);
+    return Number(scene.dayLimit) || 0;
 }
 
 /** "Anna", "Anna and Tom", "Anna, Mira and Tom". */
@@ -712,21 +815,34 @@ function buildSceneBlock(scene) {
     const location = String(scene.location || '').trim();
     if (location) lines.push(`The current scene takes place at: ${location}`);
     const day = Number(scene.day) || 0;
+    const cal = calendarDateForDay(scene);
     if (day >= 1) {
-        const limit = Number(scene.dayLimit) || 0;
+        const limit = effectiveDayLimit(scene);
         const weekday = weekdayForDay(scene);
         const dayPart = `Day ${day}${limit >= 1 ? ` of ${limit}` : ''}`;
         lines.push(`Current day: ${weekday ? `${weekday}, ${dayPart}` : dayPart}.`);
+
+        if (cal) {
+            lines.push(`Current month: ${MONTHS[cal.month]}, Year ${cal.year}.`);
+        } else {
+            const month = String(scene.month || '').trim();
+            if (month) lines.push(`Current month: ${month}.`);
+        }
+
         if (limit >= 1) {
             if (day >= limit) {
                 lines.push('This is the final day — bring the story toward its conclusion.');
+            } else if (cal && Number(scene.endMonth) >= 0) {
+                lines.push(`The story is set to conclude at the end of ${MONTHS[scene.endMonth]}, Year ${scene.endYear} (Day ${limit}); pace events accordingly.`);
             } else {
                 lines.push(`The story is set to conclude on Day ${limit}; pace events accordingly.`);
             }
         }
+    } else {
+        // No day counter yet: a free-form month label may still apply.
+        const month = String(scene.month || '').trim();
+        if (month) lines.push(`Current month: ${month}.`);
     }
-    const month = String(scene.month || '').trim();
-    if (month) lines.push(`Current month: ${month}.`);
     const time = String(scene.time || '').trim();
     if (time) lines.push(`Current time: ${time}`);
 
@@ -891,7 +1007,9 @@ async function refreshSceneFromChat() {
     if (typeof parsed.time === 'string' && parsed.time.trim()) {
         scene.time = parsed.time.trim();
     }
-    if (typeof parsed.month === 'string' && parsed.month.trim()) {
+    // The anchored calendar derives the month from the day counter, so a scanned
+    // month label only applies in free-form (no-calendar) mode.
+    if (!calendarActive(scene) && typeof parsed.month === 'string' && parsed.month.trim()) {
         scene.month = parsed.month.trim();
     }
     // Day only auto-advances once the user has opted in by setting a day (>= 1),
@@ -1457,24 +1575,6 @@ const SCENE_WINDOW_HTML = `
                 <span class="wf_scene_time_chip" data-time="Midnight" data-i18n="Midnight">Midnight</span>
             </div>
 
-            <label for="wf_scene_month" data-i18n="What month is it?">What month is it?</label>
-            <input id="wf_scene_month" class="text_pole" type="text"
-                placeholder="e.g. June, or a custom month name" />
-            <div id="wf_scene_month_presets" class="wf_scene_month_presets">
-                <span class="wf_scene_month_chip" data-month="January" data-i18n="January">January</span>
-                <span class="wf_scene_month_chip" data-month="February" data-i18n="February">February</span>
-                <span class="wf_scene_month_chip" data-month="March" data-i18n="March">March</span>
-                <span class="wf_scene_month_chip" data-month="April" data-i18n="April">April</span>
-                <span class="wf_scene_month_chip" data-month="May" data-i18n="May">May</span>
-                <span class="wf_scene_month_chip" data-month="June" data-i18n="June">June</span>
-                <span class="wf_scene_month_chip" data-month="July" data-i18n="July">July</span>
-                <span class="wf_scene_month_chip" data-month="August" data-i18n="August">August</span>
-                <span class="wf_scene_month_chip" data-month="September" data-i18n="September">September</span>
-                <span class="wf_scene_month_chip" data-month="October" data-i18n="October">October</span>
-                <span class="wf_scene_month_chip" data-month="November" data-i18n="November">November</span>
-                <span class="wf_scene_month_chip" data-month="December" data-i18n="December">December</span>
-            </div>
-
             <label for="wf_scene_day" data-i18n="Day (for stories spanning multiple days; 0 = off)">Day (for stories spanning multiple days; 0 = off)</label>
             <div class="wf_scene_day_row">
                 <div id="wf_scene_day_dec" class="menu_button menu_button_icon" title="Previous day"><i class="fa-solid fa-minus"></i></div>
@@ -1482,27 +1582,100 @@ const SCENE_WINDOW_HTML = `
                 <div id="wf_scene_day_inc" class="menu_button menu_button_icon" title="Next day"><i class="fa-solid fa-plus"></i></div>
             </div>
             <small class="notes" data-i18n="Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.">Set the starting day to begin tracking. Refresh/auto-scan then advances it when the story explicitly skips days.</small>
+            <small id="wf_scene_date_preview" class="notes wf_scene_date_preview"></small>
 
+            <label for="wf_scene_weekday" data-i18n="Day 1 is a…">Day 1 is a…</label>
+            <select id="wf_scene_weekday" class="text_pole">
+                <option value="-1" data-i18n="Off">Off</option>
+                <option value="0" data-i18n="Sunday">Sunday</option>
+                <option value="1" data-i18n="Monday">Monday</option>
+                <option value="2" data-i18n="Tuesday">Tuesday</option>
+                <option value="3" data-i18n="Wednesday">Wednesday</option>
+                <option value="4" data-i18n="Thursday">Thursday</option>
+                <option value="5" data-i18n="Friday">Friday</option>
+                <option value="6" data-i18n="Saturday">Saturday</option>
+            </select>
+
+            <label class="wf_scene_open_ended" title="Keep counting days/months forever — never show an end or a 'Day X of N' countdown.">
+                <input id="wf_scene_open_ended" type="checkbox" />
+                <span data-i18n="Open-ended story (no end — just keep counting)">Open-ended story (no end — just keep counting)</span>
+            </label>
+
+            <label for="wf_scene_start_month" data-i18n="Calendar — Day 1 starts in">Calendar — Day 1 starts in</label>
             <div class="wf_scene_date_grid">
                 <div class="wf_scene_date_field">
-                    <label for="wf_scene_weekday" data-i18n="Day 1 is a…">Day 1 is a…</label>
-                    <select id="wf_scene_weekday" class="text_pole">
-                        <option value="-1" data-i18n="Off">Off</option>
-                        <option value="0" data-i18n="Sunday">Sunday</option>
-                        <option value="1" data-i18n="Monday">Monday</option>
-                        <option value="2" data-i18n="Tuesday">Tuesday</option>
-                        <option value="3" data-i18n="Wednesday">Wednesday</option>
-                        <option value="4" data-i18n="Thursday">Thursday</option>
-                        <option value="5" data-i18n="Friday">Friday</option>
-                        <option value="6" data-i18n="Saturday">Saturday</option>
+                    <select id="wf_scene_start_month" class="text_pole">
+                        <option value="-1" data-i18n="Off (no calendar)">Off (no calendar)</option>
+                        <option value="0" data-i18n="January">January</option>
+                        <option value="1" data-i18n="February">February</option>
+                        <option value="2" data-i18n="March">March</option>
+                        <option value="3" data-i18n="April">April</option>
+                        <option value="4" data-i18n="May">May</option>
+                        <option value="5" data-i18n="June">June</option>
+                        <option value="6" data-i18n="July">July</option>
+                        <option value="7" data-i18n="August">August</option>
+                        <option value="8" data-i18n="September">September</option>
+                        <option value="9" data-i18n="October">October</option>
+                        <option value="10" data-i18n="November">November</option>
+                        <option value="11" data-i18n="December">December</option>
                     </select>
                 </div>
                 <div class="wf_scene_date_field">
-                    <label for="wf_scene_day_limit" data-i18n="Day limit (end of story; 0 = off)">Day limit (end of story; 0 = off)</label>
-                    <input id="wf_scene_day_limit" class="text_pole" type="number" min="0" max="100000" step="1" />
+                    <input id="wf_scene_start_year" class="text_pole" type="number" step="1" title="Starting year" placeholder="Year" />
                 </div>
             </div>
-            <small id="wf_scene_date_preview" class="notes wf_scene_date_preview"></small>
+            <small class="notes" data-i18n="With a calendar on, the month and year are derived from the day counter and roll over automatically.">With a calendar on, the month and year are derived from the day counter and roll over automatically.</small>
+
+            <div id="wf_scene_calendar_end">
+                <label for="wf_scene_end_month" data-i18n="Story concludes in">Story concludes in</label>
+                <div class="wf_scene_date_grid">
+                    <div class="wf_scene_date_field">
+                        <select id="wf_scene_end_month" class="text_pole">
+                            <option value="-1" data-i18n="Off (no end)">Off (no end)</option>
+                            <option value="0" data-i18n="January">January</option>
+                            <option value="1" data-i18n="February">February</option>
+                            <option value="2" data-i18n="March">March</option>
+                            <option value="3" data-i18n="April">April</option>
+                            <option value="4" data-i18n="May">May</option>
+                            <option value="5" data-i18n="June">June</option>
+                            <option value="6" data-i18n="July">July</option>
+                            <option value="7" data-i18n="August">August</option>
+                            <option value="8" data-i18n="September">September</option>
+                            <option value="9" data-i18n="October">October</option>
+                            <option value="10" data-i18n="November">November</option>
+                            <option value="11" data-i18n="December">December</option>
+                        </select>
+                    </div>
+                    <div class="wf_scene_date_field">
+                        <input id="wf_scene_end_year" class="text_pole" type="number" step="1" title="Ending year" placeholder="Year" />
+                    </div>
+                </div>
+            </div>
+
+            <div id="wf_scene_freeform_month">
+                <label for="wf_scene_month" data-i18n="What month is it?">What month is it?</label>
+                <input id="wf_scene_month" class="text_pole" type="text"
+                    placeholder="e.g. June, or a custom month name" />
+                <div id="wf_scene_month_presets" class="wf_scene_month_presets">
+                    <span class="wf_scene_month_chip" data-month="January" data-i18n="January">January</span>
+                    <span class="wf_scene_month_chip" data-month="February" data-i18n="February">February</span>
+                    <span class="wf_scene_month_chip" data-month="March" data-i18n="March">March</span>
+                    <span class="wf_scene_month_chip" data-month="April" data-i18n="April">April</span>
+                    <span class="wf_scene_month_chip" data-month="May" data-i18n="May">May</span>
+                    <span class="wf_scene_month_chip" data-month="June" data-i18n="June">June</span>
+                    <span class="wf_scene_month_chip" data-month="July" data-i18n="July">July</span>
+                    <span class="wf_scene_month_chip" data-month="August" data-i18n="August">August</span>
+                    <span class="wf_scene_month_chip" data-month="September" data-i18n="September">September</span>
+                    <span class="wf_scene_month_chip" data-month="October" data-i18n="October">October</span>
+                    <span class="wf_scene_month_chip" data-month="November" data-i18n="November">November</span>
+                    <span class="wf_scene_month_chip" data-month="December" data-i18n="December">December</span>
+                </div>
+            </div>
+
+            <div id="wf_scene_manual_limit">
+                <label for="wf_scene_day_limit" data-i18n="Day limit (end of story; 0 = off)">Day limit (end of story; 0 = off)</label>
+                <input id="wf_scene_day_limit" class="text_pole" type="number" min="0" max="100000" step="1" />
+            </div>
 
             <div id="wf_scene_director_row" style="display:none;">
                 <label for="wf_scene_director" data-i18n="World Director (group member who plays the NPCs)">World Director (group member who plays the NPCs)</label>
@@ -1626,9 +1799,11 @@ const SCENE_CSS = `
 .wf_scene_day_row { display: flex; align-items: center; gap: 6px; }
 .wf_scene_day_row .text_pole { flex: 1 1 auto; min-width: 0; text-align: center; }
 .wf_scene_date_grid { display: flex; gap: 10px; flex-wrap: wrap; }
-.wf_scene_date_field { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.wf_scene_date_preview { font-style: italic; opacity: 0.85; }
+.wf_scene_date_field { flex: 1 1 120px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wf_scene_date_preview { font-style: italic; opacity: 0.9; }
 .wf_scene_date_preview:empty { display: none; }
+.wf_scene_open_ended { display: flex; align-items: center; gap: 6px; cursor: pointer; margin: 4px 0; }
+.wf_scene_open_ended input { margin: 0; }
 #wf_scene_director_row { display: flex; flex-direction: column; gap: 4px; }
 .wf_scene_inject_cfg { margin-top: 10px; border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px; }
 .wf_scene_inject_cfg_head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; user-select: none; opacity: 0.9; }
@@ -2136,18 +2311,32 @@ function renderSceneMonthChips() {
     });
 }
 
-/** Live "→ Tuesday, Day 1 of 30" preview under the date controls. */
+/** Live "→ Tuesday, Day 1 of 30 — June, Year 1" preview under the date controls. */
 function renderSceneDatePreview() {
     const scene = getSceneData();
     const day = Number(scene.day) || 0;
     let text = '';
     if (day >= 1) {
-        const limit = Number(scene.dayLimit) || 0;
+        const limit = effectiveDayLimit(scene);
         const weekday = weekdayForDay(scene);
         const dayPart = `Day ${day}${limit >= 1 ? ` of ${limit}` : ''}`;
         text = `→ ${weekday ? `${weekday}, ${dayPart}` : dayPart}`;
+        const cal = calendarDateForDay(scene);
+        if (cal) text += ` — ${MONTHS[cal.month]}, Year ${cal.year}`;
+        if (scene.openEnded) text += ' (open-ended)';
     }
     $('#wf_scene_date_preview').text(text);
+}
+
+/** Show the calendar controls vs the free-form month/manual-limit fallback. */
+function renderSceneCalendarVisibility() {
+    const scene = getSceneData();
+    const hasCalendar = Number(scene.startMonth) >= 0;
+    // Free-form month and the manual day limit only apply without a calendar.
+    $('#wf_scene_freeform_month').toggle(!hasCalendar);
+    $('#wf_scene_manual_limit').toggle(!hasCalendar && !scene.openEnded);
+    // An open-ended story has no horizon, so the end-date pickers are moot.
+    $('#wf_scene_calendar_end').toggle(hasCalendar && !scene.openEnded);
 }
 
 function renderScene() {
@@ -2160,6 +2349,12 @@ function renderScene() {
     $('#wf_scene_day').val(scene.day);
     $('#wf_scene_day_limit').val(scene.dayLimit);
     $('#wf_scene_weekday').val(String(scene.weekdayStart));
+    $('#wf_scene_open_ended').prop('checked', scene.openEnded);
+    $('#wf_scene_start_month').val(String(scene.startMonth));
+    $('#wf_scene_start_year').val(scene.startYear);
+    $('#wf_scene_end_month').val(String(scene.endMonth));
+    $('#wf_scene_end_year').val(scene.endYear);
+    renderSceneCalendarVisibility();
     renderSceneDatePreview();
     $('#wf_scene_inject').prop('checked', scene.inject);
     $('#wf_scene_inject_position').val(String(scene.injectPosition));
@@ -2291,6 +2486,32 @@ function initSceneTrackerUI() {
             saveSceneData();
             updateSceneExtensionPrompt();
         });
+        $('#wf_scene_open_ended').on('change', function () {
+            getSceneData().openEnded = $(this).prop('checked');
+            renderSceneCalendarVisibility();
+            renderSceneDatePreview();
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        });
+        const onCalendarMonthChange = (key) => function () {
+            let v = Math.round(Number($(this).val()));
+            if (!Number.isFinite(v) || v < 0 || v > 11) v = -1;
+            getSceneData()[key] = v;
+            renderSceneCalendarVisibility();
+            renderSceneDatePreview();
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        };
+        const onCalendarYearChange = (key) => function () {
+            getSceneData()[key] = Math.round(Number($(this).val()) || 0);
+            renderSceneDatePreview();
+            saveSceneData();
+            updateSceneExtensionPrompt();
+        };
+        $('#wf_scene_start_month').on('change', onCalendarMonthChange('startMonth'));
+        $('#wf_scene_end_month').on('change', onCalendarMonthChange('endMonth'));
+        $('#wf_scene_start_year').on('input', onCalendarYearChange('startYear'));
+        $('#wf_scene_end_year').on('input', onCalendarYearChange('endYear'));
         const stepDay = (delta) => {
             const scene = getSceneData();
             scene.day = Math.max(0, scene.day + delta);

@@ -180,7 +180,11 @@ async function onCharacterMessage(messageId) {
     if (!settings().enabled) return;
     if (!index) await refreshIndex();
     try {
-        const result = captureFromMessage(messageId, index, settings(), getContext());
+        // Restrict prose-mention actor inference to the live scene roster (when
+        // the World-Forge Scene Tracker provides one) so a name merely mentioned
+        // in narration isn't credited with acting this turn (contract §6).
+        const presentIds = settings().sceneGating ? scenePresentIds(index) : null;
+        const result = captureFromMessage(messageId, index, settings(), getContext(), false, presentIds);
         if (result) setLastCapture(result);
         saveStore();
 

@@ -74,7 +74,15 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
         const allIds = [...index.byId.keys()];
         const sceneIds = [...new Set([...index.sceneByUid.values()].map(s => s.id))];
         const personaName = extra.personaName || index.personas?.user?.name || '';
-        const instr = buildEmitInstruction(present, allIds, sceneIds, personaName);
+        // When an authoritative scene roster is known, only offer ids for NPCs
+        // actually in scene as "actors" candidates. `present` may also include
+        // NPCs merely mentioned/activated this turn (e.g. referenced in dialogue)
+        // whose "now" line we still want injected, but they didn't act — offering
+        // them here invites the model to (wrongly) tag them as acting too.
+        const actorVocab = (extra.inSceneIds && extra.inSceneIds.size > 0)
+            ? present.filter(id => extra.inSceneIds.has(id))
+            : present;
+        const instr = buildEmitInstruction(actorVocab, allIds, sceneIds, personaName);
         block = block ? `${block}\n\n${instr}` : `[NPC Memory]\n${instr}`;
     }
 

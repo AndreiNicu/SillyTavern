@@ -20,9 +20,13 @@ const LOG = '[npc-memory]';
  * @param {object} settings
  * @param {object} ctx           getContext() result.
  * @param {boolean} [force]      Re-capture even if already captured (rescan).
+ * @param {Set<string>|null} [presentIds]  Authoritative in-scene NPC ids for this
+ *   message, when known (e.g. current World-Forge Scene Tracker roster). Scopes
+ *   prose-mention actor inference only — a model-emitted tag's `actors` remain
+ *   authoritative per contract §7.3 regardless.
  * @returns {{actors: string[], withUser: boolean, scene: string|null, source: string}|null}
  */
-export function captureFromMessage(messageId, index, settings, ctx, force = false) {
+export function captureFromMessage(messageId, index, settings, ctx, force = false, presentIds = null) {
     const chat = ctx?.chat;
     const message = chat?.[messageId];
     if (!message || message.is_user || message.is_system) return null;
@@ -46,13 +50,13 @@ export function captureFromMessage(messageId, index, settings, ctx, force = fals
 
     let tag = parseTag(text);
     if (!tag) {
-        tag = inferTag(message, index, personaAliases);
+        tag = inferTag(message, index, personaAliases, presentIds);
     } else if (tag.withUser === undefined) {
         // Model omitted withUser: fall back to alias inference for that field.
-        tag.withUser = inferTag(message, index, personaAliases).withUser;
+        tag.withUser = inferTag(message, index, personaAliases, presentIds).withUser;
     }
 
-    const actors = tag.actors.length ? tag.actors : inferTag(message, index, personaAliases).actors;
+    const actors = tag.actors.length ? tag.actors : inferTag(message, index, personaAliases, presentIds).actors;
     if (actors.length === 0) {
         dlog('capture: no resolvable actor for message', messageId);
     }

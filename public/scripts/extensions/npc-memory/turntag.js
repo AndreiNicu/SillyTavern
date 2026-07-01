@@ -95,9 +95,13 @@ export function resolveNameToId(name, index) {
  * @param {{name?: string, mes?: string}} message
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
  * @param {string[]} personaAliases  All known {{user}} names/aliases.
+ * @param {Set<string>|null} [presentIds]  Authoritative in-scene ids, when known
+ *   (e.g. from the World-Forge Scene Tracker). Scopes prose-mention detection so
+ *   an NPC merely referenced in narration (but not in the scene) isn't credited
+ *   with acting. Null/empty ⇒ no restriction (full roster, prior behavior).
  * @returns {object} an inferred tag.
  */
-export function inferTag(message, index, personaAliases) {
+export function inferTag(message, index, personaAliases, presentIds) {
     const text = String(message?.mes ?? '');
 
     // Actor(s): prefer the speaker if it's a known NPC; otherwise detect NPCs
@@ -107,7 +111,7 @@ export function inferTag(message, index, personaAliases) {
     if (index?.byId?.has?.(speakerId)) {
         actors = [speakerId];
     } else {
-        actors = detectActorsInText(text, index);
+        actors = detectActorsInText(text, index, presentIds);
     }
 
     const withUser = aliasInText(text, personaAliases) || addressesUser(text);
@@ -157,11 +161,15 @@ function aliasInText(text, aliases) {
  * Used for actor inference when the speaker isn't itself an NPC.
  * @param {string} text
  * @param {import('./manifest-reader.js').NpcMemoryIndex} index
+ * @param {Set<string>|null} [presentIds]  When given (non-empty), only NPCs in
+ *   this set are eligible — a stray mention of an off-scene NPC's name (e.g. in
+ *   flavor text or dialogue about them) must not credit them with acting.
  * @returns {string[]} matched NPC ids, in roster order.
  */
-export function detectActorsInText(text, index) {
+export function detectActorsInText(text, index, presentIds) {
     const out = [];
     for (const rec of index?.byId?.values?.() ?? []) {
+        if (presentIds && presentIds.size > 0 && !presentIds.has(rec.id)) continue;
         const needles = [rec.displayName, ...(rec.aliases ?? [])];
         if (needles.some(n => wordInText(text, n))) out.push(rec.id);
     }

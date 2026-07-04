@@ -4854,6 +4854,14 @@
                                             <input id="world_info_llm_filter_content_snippet_max" type="number" min="20" max="1000" step="10" class="text_pole textarea_compact" />
                                         </div>
                                     </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5" title="Master on/off for the candidate shortlist. When off, every eligible entry is sent to the LLM filter regardless of 'Max candidates' (original behaviour). Useful for A/B testing the shortlist while tuning it." data-i18n="[title]Master on/off for the candidate shortlist. When off, every eligible entry is sent to the LLM filter regardless of 'Max candidates' (original behaviour). Useful for A/B testing the shortlist while tuning it.">
+                                        <label class="checkbox_label flex1">
+                                            <input id="world_info_llm_filter_shortlist_enabled" type="checkbox" />
+                                            <small data-i18n="Shortlist candidates" class="whitespacenowrap flex1">
+                                                Shortlist candidates
+                                            </small>
+                                        </label>
+                                    </div>
                                     <div class="world_info_llm_filter_control flex-container marginTop5" title="Maximum entries sent to the LLM filter per call. When more entries are eligible (large worlds with many lorebooks), they are shortlisted by a cheap keyword pass first so the prompt stays bounded. Set 0 for no cap (send everything)." data-i18n="[title]Maximum entries sent to the LLM filter per call. When more entries are eligible (large worlds with many lorebooks), they are shortlisted by a cheap keyword pass first so the prompt stays bounded. Set 0 for no cap (send everything).">
                                         <label for="world_info_llm_filter_max_candidates" class="flexnowrap whitespacenowrap">
                                             <span data-i18n="Max candidates (0 = no cap)">Max candidates (0 = no cap)</span>

@@ -97,6 +97,10 @@ export let world_info_llm_filter_include_content = false;
 // to the LLM filter. Lets users trade prompt size against context richness.
 export let world_info_llm_filter_scene_field_max = 600;
 export let world_info_llm_filter_content_snippet_max = 160;
+// Master on/off for the candidate shortlist. When off, every eligible entry is sent
+// to the LLM filter regardless of "Max candidates" (original behaviour) — handy for
+// A/B testing the shortlist while it's being tuned.
+export let world_info_llm_filter_shortlist_enabled = true;
 // Max entries sent to the LLM filter in one call. When the eligible set is larger,
 // it's shortlisted by a cheap lexical pass first so the prompt stays bounded on big
 // worlds. 0 = no cap (send everything).
@@ -858,6 +862,7 @@ export function getWorldInfoSettings() {
         world_info_llm_filter_include_content,
         world_info_llm_filter_scene_field_max,
         world_info_llm_filter_content_snippet_max,
+        world_info_llm_filter_shortlist_enabled,
         world_info_llm_filter_max_candidates,
     };
 }
@@ -893,6 +898,7 @@ export function updateWorldInfoSettings(settings, activeWorldInfo) {
         world_info_llm_filter_include_content: (value) => world_info_llm_filter_include_content = Boolean(value),
         world_info_llm_filter_scene_field_max: (value) => world_info_llm_filter_scene_field_max = Math.max(50, Math.min(4000, Number(value) || 600)),
         world_info_llm_filter_content_snippet_max: (value) => world_info_llm_filter_content_snippet_max = Math.max(20, Math.min(1000, Number(value) || 160)),
+        world_info_llm_filter_shortlist_enabled: (value) => world_info_llm_filter_shortlist_enabled = value === undefined ? true : Boolean(value),
         world_info_llm_filter_max_candidates: (value) => world_info_llm_filter_max_candidates = Math.max(0, Math.min(2000, Math.floor(Number(value)) || 0)),
         // Unused
         world_info: (_value) => { },
@@ -1058,6 +1064,7 @@ export function setWorldInfoSettings(settings, data) {
     $('#world_info_llm_filter_include_content').prop('checked', world_info_llm_filter_include_content);
     $('#world_info_llm_filter_scene_field_max').val(world_info_llm_filter_scene_field_max);
     $('#world_info_llm_filter_content_snippet_max').val(world_info_llm_filter_content_snippet_max);
+    $('#world_info_llm_filter_shortlist_enabled').prop('checked', world_info_llm_filter_shortlist_enabled);
     $('#world_info_llm_filter_max_candidates').val(world_info_llm_filter_max_candidates);
     $('#world_info_llm_filter_system_prompt').val(world_info_llm_filter_system_prompt);
     renderLlmFilterProfileOptions(world_info_llm_filter_profile);
@@ -4880,8 +4887,9 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
     // filter sees, used to cap the candidate list so the prompt stays bounded no matter
     // how large the world is (many books / many entries). The LLM then reranks the
     // shortlist precisely. <= 0 disables the cap (send everything, original behaviour).
+    const shortlistCap = world_info_llm_filter_shortlist_enabled ? (Number(world_info_llm_filter_max_candidates) || 0) : 0;
     const haystack = [recent.join('\n'), authorsNote, sceneContext].join('\n').toLowerCase();
-    const filtered = shortlistLlmFilterCandidates(candidates, haystack, Number(world_info_llm_filter_max_candidates) || 0);
+    const filtered = shortlistLlmFilterCandidates(candidates, haystack, shortlistCap);
 
     const includeContent = !!world_info_llm_filter_include_content;
     const candidateLines = filtered.map((entry, i) => {
@@ -6695,6 +6703,11 @@ export function initWorldInfo() {
         world_info_llm_filter_content_snippet_max = Number.isFinite(value) && value > 0
             ? Math.min(1000, Math.max(20, Math.floor(value)))
             : 160;
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_shortlist_enabled').on('input', function () {
+        world_info_llm_filter_shortlist_enabled = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

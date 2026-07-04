@@ -103,8 +103,12 @@ export async function saveNow() {
 const MAX_EVENTS = 50;
 /** Max characters kept in a slot summary snippet (placeholder display). */
 const SUMMARY_LEN = 220;
-/** Max characters of cleaned prose retained per event (summarizer input). */
-const EVENT_TEXT_LEN = 600;
+/** Max characters of cleaned prose retained per event (summarizer input).
+ * A full roleplay message often runs well past a thousand characters; keep
+ * enough that a beat appearing in the back half of a message (e.g. an NPC
+ * noticing {{user}} mid-scene) still reaches the summarizer instead of being
+ * truncated away before it can become a durable memory. */
+const EVENT_TEXT_LEN = 2000;
 
 /**
  * Condense message prose into a single line: drop markdown emphasis and quotes,
@@ -168,6 +172,20 @@ const MAX_LONGTERM = 30;
 const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 /**
+ * Detect a provider/proxy error notice returned in place of real content — e.g.
+ * a "thinking" model whose internal reasoning was truncated by too small a token
+ * budget. Such text must never be stored as a memory. Conservative on purpose:
+ * matches distinctive failure phrasings, not anything merely bracketed.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isErrorNotice(text) {
+    const s = String(text ?? '');
+    if (!s) return false;
+    return /response was truncated|increase max_?tokens|enable_thinking|internal reasoning|finished its internal|max_?tokens, or disable/i.test(s);
+}
+
+/**
  * Append durable long-term memories to an NPC, deduped against existing ones.
  * @param {string} id
  * @param {string[]} texts   One-line key facts/moments.
@@ -180,7 +198,7 @@ export function addLongTerm(id, texts, meta = {}) {
     let added = 0;
     for (const t of texts) {
         const text = String(t ?? '').trim();
-        if (!text || seen.has(norm(text))) continue;
+        if (!text || isErrorNotice(text) || seen.has(norm(text))) continue;
         seen.add(norm(text));
         rec.longTerm.push({ ts: Date.now(), text, source: meta.source || 'summary' });
         added++;

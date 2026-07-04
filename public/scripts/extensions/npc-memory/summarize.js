@@ -13,7 +13,7 @@
  * temperature) when configured, else the main generation API.
  */
 
-import { allRecords, addLongTerm } from './store.js';
+import { allRecords, addLongTerm, isErrorNotice } from './store.js';
 import { dlog } from './debug.js';
 
 const LOG = '[npc-memory]';
@@ -52,6 +52,7 @@ export function isSummarizing() {
 
 async function summarizeRecord(rec, ctx, settings, personaName) {
     const who = personaName || 'the user';
+    scrubNoise(rec); // self-heal records poisoned by a prior failed summary
     const newEvents = rec.events.filter(e => !e.summarized);
 
     // --- Working memory: rolling recency recap per slot. ---
@@ -92,6 +93,28 @@ async function summarizeRecord(rec, ctx, settings, personaName) {
 }
 
 /**
+ * Remove memories poisoned by a prior failed summary (a provider error notice
+ * stored as content). Drops such long-term facts and clears any slot whose
+ * summary is a notice, so the next summary pass can repopulate it cleanly.
+ * @param {import('./store.js').NpcRecord} rec
+ */
+function scrubNoise(rec) {
+    if (Array.isArray(rec.longTerm)) {
+        const kept = rec.longTerm.filter(e => !isErrorNotice(e?.text));
+        if (kept.length !== rec.longTerm.length) {
+            dlog('scrub: dropped poisoned long-term', { id: rec.id, removed: rec.longTerm.length - kept.length });
+            rec.longTerm = kept;
+        }
+    }
+    for (const key of ['lastWithUser', 'lastAlone']) {
+        if (isErrorNotice(rec.slots?.[key]?.summary)) {
+            dlog('scrub: cleared poisoned slot', { id: rec.id, slot: key });
+            rec.slots[key] = null;
+        }
+    }
+}
+
+/**
  * Generate one rolling slot recap (working memory).
  */
 async function callSummary(ctx, name, prev, evs, label, settings, who) {
@@ -119,7 +142,11 @@ async function extractLongTerm(ctx, name, existing, evs, who, settings) {
         'From the roleplay events below, extract any LASTING, significant moments worth remembering ' +
         `permanently about ${name}: promises, declarations, confessions, decisions, revelations, ` +
         `important personal facts, and changes in their relationship with ${who}. ` +
-        'Ignore small talk, mood, and routine actions. ' +
+        'Also keep CHARGED interpersonal beats even when they read as casual or flirtatious: ' +
+        `moments of attraction or tension, things ${name} notices about ${who} (or notices ${who} ` +
+        `noticing), and anything ${name} could later use as leverage or hold over ${who}. ` +
+        'Ignore only true filler — ambient scenery, idle small talk, and routine actions with no ' +
+        'lasting consequence. When in doubt about an interpersonal beat, keep it. ' +
         'Output each as its own short, self-contained line in past tense (no bullets, no preamble). ' +
         'If there is nothing genuinely significant and new, reply with exactly: NONE';
     const out = await requestLLM(ctx, settings, `${instruction}\n\n${known}Events (oldest first):\n${lines}`, summaryTokens(settings), name);
@@ -136,7 +163,7 @@ function parseFacts(text) {
 }
 
 function summaryTokens(settings) {
-    return Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 200;
+    return Number(settings.summaryTokens) > 0 ? Number(settings.summaryTokens) : 512;
 }
 
 /**
@@ -150,8 +177,12 @@ export async function requestLLM(ctx, settings, prompt, maxTokens, name) {
             const { ConnectionManagerRequestService } = await import('../shared.js');
             const out = await ConnectionManagerRequestService.sendRequest(settings.summaryProfile, prompt, maxTokens);
             const text = typeof out === 'string' ? out : (out?.content ?? '');
-            if (text) return String(text).trim();
-            console.warn(`${LOG} profile request returned empty; falling back to main API.`);
+            if (text && !isErrorNotice(text)) return String(text).trim();
+            if (isErrorNotice(text)) {
+                console.warn(`${LOG} summary model returned a truncation/error notice (not stored). Raise "Summary token budget" or disable thinking on the summary profile. Falling back to main API.`);
+            } else {
+                console.warn(`${LOG} profile request returned empty; falling back to main API.`);
+            }
         } catch (err) {
             console.warn(`${LOG} connection profile request failed; falling back to main API.`, err);
         }
@@ -163,7 +194,12 @@ export async function requestLLM(ctx, settings, prompt, maxTokens, name) {
             systemPrompt: 'You write terse, factual memory notes. Reply with only the requested text.',
             responseLength: maxTokens,
         });
-        return String(out ?? '').trim();
+        const text = String(out ?? '').trim();
+        if (isErrorNotice(text)) {
+            console.warn(`${LOG} summary generation returned a truncation/error notice (not stored). Raise the summary token budget or disable thinking on the summary model.`);
+            return '';
+        }
+        return text;
     } catch (err) {
         console.warn(`${LOG} generation failed for ${name}.`, err);
         return '';

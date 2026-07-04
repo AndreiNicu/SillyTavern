@@ -4812,7 +4812,7 @@ function buildLlmFilterSceneContext() {
                 const bits = [];
                 if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
                 if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
-                if (String(p.clothes || '').trim()) bits.push(`wearing: ${p.clothes.trim()}`);
+                if (String(p.clothing || '').trim()) bits.push(`wearing: ${p.clothing.trim()}`);
                 if (String(p.mood || '').trim()) bits.push(`mood: ${p.mood.trim()}`);
                 if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
                 if (bits.length) lines.push(`  ${String(p.name).trim()} — ${clampForFilterPrompt(bits.join('; '), world_info_llm_filter_scene_field_max)}`);

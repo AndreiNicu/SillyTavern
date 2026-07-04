@@ -38,6 +38,12 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
     const present = npcIds.slice(0, cap);
     const lines = [];
 
+    // Whether an authoritative scene roster is available. Without one (e.g. the
+    // first turns of a fresh chat, before the Scene Tracker has scanned), the
+    // candidate list only means "activated/mentioned this turn" — it must not be
+    // presented to the model as physical presence.
+    const hasRoster = !!(extra.inSceneIds && extra.inSceneIds.size > 0);
+
     // Per-NPC memory: rolling "now" recap (contract §6) plus long-term key
     // moments, retrieved by relevance to the current moment (not just recency).
     // The "now" recap is only injected for NPCs actually in the scene (when a
@@ -47,8 +53,13 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
         const meta = index.byId.get(id);
         const name = meta?.displayName ?? id;
         const rec = getRecord(id);
-        const inScene = !extra.inSceneIds || extra.inSceneIds.has(id);
-        const now = inScene ? summarizeRecord(rec) : '';
+        const inScene = !hasRoster || extra.inSceneIds.has(id);
+        // Without a roster, mention-inferred snippet recaps are double guesswork
+        // (guessed actor + unconfirmed presence): a greeting that merely names an
+        // NPC would otherwise inject "<NPC> (now): with you: …" for someone who
+        // never acted. Only confident recaps (model/card tags, LLM summaries)
+        // are injected until presence is known.
+        const now = inScene ? summarizeRecord(rec, !hasRoster) : '';
         if (now) lines.push(`- ${name} (now): ${now}`);
         if (settings.longTermMemory !== false) {
             const facts = relevantLongTerm(rec, settings, extra, maxLT);
@@ -56,15 +67,30 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
         }
     }
 
-    // Relationship hints among co-present NPCs (contract §8).
-    if (settings.relationshipHints !== false) {
-        for (const line of relationshipHints(present, index)) lines.push(line);
+    // Relationship hints among co-present NPCs (contract §8). "Co-present"
+    // needs the scene roster: without one, hints among merely-mentioned NPCs
+    // read like scene state (models parse "A → B" as A acting on B) and imply
+    // absent NPCs are around.
+    if (settings.relationshipHints !== false && hasRoster) {
+        const coPresent = present.filter(id => extra.inSceneIds.has(id));
+        for (const line of relationshipHints(coPresent, index)) lines.push(line);
     }
 
-    // Presence roster (optional; useful for verifying the pipeline).
+    // Presence roster (optional; useful for verifying the pipeline). "Present:"
+    // is only claimed from the authoritative scene roster; anything else is
+    // labeled as mentioned/relevant so the model doesn't spawn absent NPCs.
     if (settings.announcePresence) {
-        const names = present.map(id => index.byId.get(id)?.displayName ?? id);
-        if (names.length) lines.unshift(`Present: ${names.join(', ')}.`);
+        const nameOf = id => index.byId.get(id)?.displayName ?? id;
+        const header = [];
+        if (hasRoster) {
+            const inScene = present.filter(id => extra.inSceneIds.has(id)).map(nameOf);
+            const offScene = present.filter(id => !extra.inSceneIds.has(id)).map(nameOf);
+            if (inScene.length) header.push(`Present: ${inScene.join(', ')}.`);
+            if (offScene.length) header.push(`Mentioned, not in scene: ${offScene.join(', ')}.`);
+        } else if (present.length) {
+            header.push(`NPCs this turn (mentioned or relevant — not necessarily in the scene): ${present.map(nameOf).join(', ')}.`);
+        }
+        lines.unshift(...header);
     }
 
     let block = lines.length ? `[NPC Memory]\n${lines.join('\n')}` : '';
@@ -74,7 +100,15 @@ export function buildInjectionText(npcIds, index, settings, getRecord = () => un
         const allIds = [...index.byId.keys()];
         const sceneIds = [...new Set([...index.sceneByUid.values()].map(s => s.id))];
         const personaName = extra.personaName || index.personas?.user?.name || '';
-        const instr = buildEmitInstruction(present, allIds, sceneIds, personaName);
+        // When an authoritative scene roster is known, only offer ids for NPCs
+        // actually in scene as "actors" candidates. `present` may also include
+        // NPCs merely mentioned/activated this turn (e.g. referenced in dialogue)
+        // whose "now" line we still want injected, but they didn't act — offering
+        // them here invites the model to (wrongly) tag them as acting too.
+        const actorVocab = (extra.inSceneIds && extra.inSceneIds.size > 0)
+            ? present.filter(id => extra.inSceneIds.has(id))
+            : present;
+        const instr = buildEmitInstruction(actorVocab, allIds, sceneIds, personaName);
         block = block ? `${block}\n\n${instr}` : `[NPC Memory]\n${instr}`;
     }
 
@@ -104,13 +138,18 @@ function relevantLongTerm(rec, settings, extra, maxLT) {
  * Summarize a stored record into a single line (the rolling "now" recap).
  *
  * @param {import('./store.js').NpcRecord|undefined} rec
+ * @param {boolean} [confidentOnly]  Skip slots that came from mention-inferred
+ *   snippets (kind 'snippet' + source 'inferred') — used while no scene roster
+ *   confirms the NPC's presence. Slots from turn tags or LLM summaries pass.
  * @returns {string}
  */
-function summarizeRecord(rec) {
+function summarizeRecord(rec, confidentOnly = false) {
     if (!rec) return '';
+    const usable = (slot) => slot?.summary
+        && (!confidentOnly || slot.kind !== 'snippet' || slot.source !== 'inferred');
     const parts = [];
-    if (rec.slots?.lastWithUser?.summary) parts.push(`with you: ${rec.slots.lastWithUser.summary}`);
-    if (rec.slots?.lastAlone?.summary) parts.push(`recently: ${rec.slots.lastAlone.summary}`);
+    if (usable(rec.slots?.lastWithUser)) parts.push(`with you: ${rec.slots.lastWithUser.summary}`);
+    if (usable(rec.slots?.lastAlone)) parts.push(`recently: ${rec.slots.lastAlone.summary}`);
     return parts.join('; ');
 }
 
@@ -132,7 +171,9 @@ function relationshipHints(present, index) {
             const b = index.byId.get(edge.to)?.displayName ?? edge.to;
             const kind = edge.kind ? ` (${edge.kind})` : '';
             const note = edge.note ? ` — ${edge.note}` : '';
-            out.push(`- ${a} → ${b}${kind}${note}`);
+            // "Relationship:" keeps the model from reading the arrow as an
+            // action ("A did something to B") instead of a standing relation.
+            out.push(`- Relationship: ${a} → ${b}${kind}${note}`);
         }
     }
     return out;

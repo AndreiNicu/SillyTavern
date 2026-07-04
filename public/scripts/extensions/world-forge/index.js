@@ -537,7 +537,7 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 // contradict itself turn to turn. Explicit departures bypass this entirely.
 const SCENE_ABSENCE_GRACE = 3;
 
-/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
+/** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, mood?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
 /** @typedef {{location: string, time: string, day: number, dayLimit: number, openEnded: boolean, weekdayStart: number, month: string, startMonth: number, startYear: number, endMonth: number, endYear: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
 
 // Weekday names, indexed to match the day-of-week anchor (weekdayStart). The
@@ -904,12 +904,19 @@ function buildSceneBlock(scene) {
         const status = [];
         for (const p of present) {
             if (p.role === 'user') continue;
+            // Physical status stays on the character's headline; clothing and mood get
+            // their own indented lines beneath it so they read as distinct facts.
             const bits = [];
             if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
             if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
-            if (String(p.clothing || '').trim()) bits.push(`wearing: ${p.clothing.trim()}`);
             if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
-            if (bits.length) status.push(`- ${p.name} — ${bits.join('; ')}`);
+            const extra = [];
+            if (String(p.clothing || '').trim()) extra.push(`  Wearing: ${p.clothing.trim()}`);
+            if (String(p.mood || '').trim()) extra.push(`  Mood: ${p.mood.trim()}`);
+            if (bits.length || extra.length) {
+                status.push(`- ${p.name}${bits.length ? ` — ${bits.join('; ')}` : ''}`);
+                status.push(...extra);
+            }
         }
         if (status.length) {
             lines.push('Character status:');
@@ -934,6 +941,7 @@ const SCENE_EXTRACT_PROMPT = [
     '  For each, give: "name"; "role" (one of "user", "character", or "npc" — "character" = a main AI character, "npc" = a minor/side character);',
     '  and for non-user entries the best current "health" (e.g. healthy, wounded, exhausted),',
     '  "condition" (any injury/soreness/status, or "" if none), "clothing" (what they are currently wearing, or "" if unknown),',
+    '  "mood" (their current emotional state, e.g. calm, angry, flustered, aroused, or "" if unknown),',
     '  and "lastLocation" (where they were last seen, or "").',
     '- "left": the names of anyone who VISIBLY EXITED the scene in these recent messages — they walked out, fled,',
     '  were taken away, teleported, hung up, died, or otherwise clearly departed. List a name here ONLY when the text',
@@ -941,7 +949,7 @@ const SCENE_EXTRACT_PROMPT = [
     'Base everything ONLY on the transcript. Use "" for anything unknown. Do not invent characters.',
     '',
     'Reply with ONLY a JSON object of this exact shape:',
-    '{"location": "...", "time": "...", "month": "...", "dayAdvance": 0, "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "lastLocation": "..."}], "left": ["..."]}',
+    '{"location": "...", "time": "...", "month": "...", "dayAdvance": 0, "present": [{"name": "...", "role": "npc", "health": "...", "condition": "...", "clothing": "...", "mood": "...", "lastLocation": "..."}], "left": ["..."]}',
 ].join('\n');
 
 /**
@@ -1137,6 +1145,7 @@ async function refreshSceneFromChat() {
             if (String(raw.health || '').trim()) next.health = String(raw.health).trim();
             if (String(raw.condition || '').trim()) next.condition = String(raw.condition).trim();
             if (String(raw.clothing || '').trim()) next.clothing = String(raw.clothing).trim();
+            if (String(raw.mood || '').trim()) next.mood = String(raw.mood).trim();
             if (String(raw.lastLocation || '').trim()) next.lastLocation = String(raw.lastLocation).trim();
         }
         if (!existing) scene.present.push(next);
@@ -2178,6 +2187,7 @@ function renderPresent() {
             field('health', 'Health', 'e.g. healthy, wounded');
             field('condition', 'Injury / soreness', 'e.g. sprained ankle');
             field('clothing', 'Clothing', 'e.g. red dress, leather armor');
+            field('mood', 'Mood', 'e.g. calm, angry, flustered');
             field('lastLocation', 'Last known location', 'optional');
             $card.append($stats);
         }

@@ -4826,6 +4826,48 @@
                                         </label>
                                         <input id="world_info_llm_filter_context_messages" type="number" min="1" max="50" step="1" class="text_pole textarea_compact" />
                                     </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5">
+                                        <label title="Send extra scene context (your persona, the active character or group cast, and the Scene Tracker's location and present cast) to the LLM filter. Helps it keep entries for entities that are in play but not named in the last few messages." data-i18n="[title]Send extra scene context (your persona, the active character or group cast, and the Scene Tracker's location and present cast) to the LLM filter. Helps it keep entries for entities that are in play but not named in the last few messages." class="checkbox_label flex1">
+                                            <input id="world_info_llm_filter_scene_context" type="checkbox" />
+                                            <small data-i18n="Send scene context" class="whitespacenowrap flex1">
+                                                Send scene context
+                                            </small>
+                                        </label>
+                                        <label title="Send a short content snippet for each candidate entry so the model can match on meaning, not just keywords. Improves accuracy but adds the most tokens per scan." data-i18n="[title]Send a short content snippet for each candidate entry so the model can match on meaning, not just keywords. Improves accuracy but adds the most tokens per scan." class="checkbox_label flex1">
+                                            <input id="world_info_llm_filter_include_content" type="checkbox" />
+                                            <small data-i18n="Send entry snippets" class="whitespacenowrap flex1">
+                                                Send entry snippets
+                                            </small>
+                                        </label>
+                                    </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5">
+                                        <div class="flex1 flex-container flexFlowColumn" title="Maximum characters per scene-context field (persona/character description, scenario, and per-character status) sent to the LLM filter." data-i18n="[title]Maximum characters per scene-context field (persona/character description, scenario, and per-character status) sent to the LLM filter.">
+                                            <label for="world_info_llm_filter_scene_field_max" class="flexnowrap whitespacenowrap">
+                                                <span data-i18n="Scene field limit">Scene field limit</span>
+                                            </label>
+                                            <input id="world_info_llm_filter_scene_field_max" type="number" min="50" max="4000" step="10" class="text_pole textarea_compact" />
+                                        </div>
+                                        <div class="flex1 flex-container flexFlowColumn" title="Maximum characters per entry content snippet sent to the LLM filter when 'Send entry snippets' is enabled." data-i18n="[title]Maximum characters per entry content snippet sent to the LLM filter when 'Send entry snippets' is enabled.">
+                                            <label for="world_info_llm_filter_content_snippet_max" class="flexnowrap whitespacenowrap">
+                                                <span data-i18n="Snippet limit">Snippet limit</span>
+                                            </label>
+                                            <input id="world_info_llm_filter_content_snippet_max" type="number" min="20" max="1000" step="10" class="text_pole textarea_compact" />
+                                        </div>
+                                    </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5" title="Master on/off for the candidate shortlist. When off, every eligible entry is sent to the LLM filter regardless of 'Max candidates' (original behaviour). Useful for A/B testing the shortlist while tuning it." data-i18n="[title]Master on/off for the candidate shortlist. When off, every eligible entry is sent to the LLM filter regardless of 'Max candidates' (original behaviour). Useful for A/B testing the shortlist while tuning it.">
+                                        <label class="checkbox_label flex1">
+                                            <input id="world_info_llm_filter_shortlist_enabled" type="checkbox" />
+                                            <small data-i18n="Shortlist candidates" class="whitespacenowrap flex1">
+                                                Shortlist candidates
+                                            </small>
+                                        </label>
+                                    </div>
+                                    <div class="world_info_llm_filter_control flex-container marginTop5" title="Maximum entries sent to the LLM filter per call. When more entries are eligible (large worlds with many lorebooks), they are shortlisted by a cheap keyword pass first so the prompt stays bounded. Set 0 for no cap (send everything)." data-i18n="[title]Maximum entries sent to the LLM filter per call. When more entries are eligible (large worlds with many lorebooks), they are shortlisted by a cheap keyword pass first so the prompt stays bounded. Set 0 for no cap (send everything).">
+                                        <label for="world_info_llm_filter_max_candidates" class="flexnowrap whitespacenowrap">
+                                            <span data-i18n="Max candidates (0 = no cap)">Max candidates (0 = no cap)</span>
+                                        </label>
+                                        <input id="world_info_llm_filter_max_candidates" type="number" min="0" max="2000" step="10" class="text_pole textarea_compact" />
+                                    </div>
                                     <div class="world_info_llm_filter_control flex-container flexFlowColumn marginTop5" title="Override the system prompt sent to the LLM filter. Leave blank to use the default." data-i18n="[title]Override the system prompt sent to the LLM filter. Leave blank to use the default.">
                                         <label for="world_info_llm_filter_system_prompt" class="flexnowrap whitespacenowrap">
                                             <span data-i18n="LLM filter system prompt (override)">LLM filter system prompt (override)</span>

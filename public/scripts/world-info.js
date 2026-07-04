@@ -85,8 +85,28 @@ export let world_info_llm_filter_enabled = false;
 export let world_info_llm_filter_profile = '';
 export let world_info_llm_filter_context_messages = 5;
 export let world_info_llm_filter_system_prompt = '';
+// Send extra scene context (user persona, active character(s), and the Scene
+// Tracker's location/present cast) so the filter can resolve pronouns and
+// off-screen-but-in-play entities. On by default; costs a few tokens per scan.
+export let world_info_llm_filter_scene_context = true;
+// Include a short content snippet per candidate entry so the model can do real
+// semantic matching instead of relying on keys alone. Off by default — it adds
+// the most tokens.
+export let world_info_llm_filter_include_content = false;
+// Character limits for scene-context fields and per-entry content snippets sent
+// to the LLM filter. Lets users trade prompt size against context richness.
+export let world_info_llm_filter_scene_field_max = 600;
+export let world_info_llm_filter_content_snippet_max = 160;
+// Master on/off for the candidate shortlist. When off, every eligible entry is sent
+// to the LLM filter regardless of "Max candidates" (original behaviour) — handy for
+// A/B testing the shortlist while it's being tuned.
+export let world_info_llm_filter_shortlist_enabled = true;
+// Max entries sent to the LLM filter in one call. When the eligible set is larger,
+// it's shortlisted by a cheap lexical pass first so the prompt stays bounded on big
+// worlds. 0 = no cap (send everything).
+export let world_info_llm_filter_max_candidates = 200;
 
-const DEFAULT_LLM_FILTER_PROMPT = `You are a relevance filter for roleplay world info entries. You will see (optionally) an author's note describing the current story beat or scene context, recent chat messages, and a numbered list of candidate entries — each shows the entry title, primary keys, and secondary keys (no entry content).
+const DEFAULT_LLM_FILTER_PROMPT = `You are a relevance filter for roleplay world info entries. You will see (optionally) scene context (who is present, where, the active character(s) and the user persona), an author's note describing the current story beat, recent chat messages, and a numbered list of candidate entries — each shows the entry title, primary keys, secondary keys, and optionally a short content snippet.
 
 Your job: pick EVERY entry that is relevant to what is happening in the chat right now. Use semantic understanding — synonyms count when the meaning matches. There is no limit on how many you select; include all that qualify, not just a representative few.
 
@@ -96,7 +116,7 @@ Apply these rules in priority order (rule 1 is the highest priority and override
 
 2. NAMED SUBJECT IN PLAY. Include an entry when its named subject (character, place, item, faction, concept) is in play, including via a clear synonym (for example "stallion" activates a "horse" entry).
 
-3. AUTHOR'S NOTE. If an author's note is provided, weigh it heavily — it often names the current story beat, location, or active characters that are in play.
+3. AUTHOR'S NOTE & SCENE CONTEXT. If an author's note or scene context is provided, weigh it heavily — it names the current location, active characters, user persona, and present cast that are in play. An entry whose named subject is listed as present in the scene should be included even if it is not mentioned in the recent messages.
 
 4. GENERIC-WORD GUARD. Do NOT include an entry only because one of its keys is a common word used generically. For example an entry "Excalibur" whose key is "sword" must NOT fire on "I drew my sword" — that is a generic sword, not the named one. A proper name or specific relational descriptor is never a generic word, so this guard can never override rule 1. Use secondary keys to settle borderline generic cases.
 
@@ -838,6 +858,12 @@ export function getWorldInfoSettings() {
         world_info_llm_filter_profile,
         world_info_llm_filter_context_messages,
         world_info_llm_filter_system_prompt,
+        world_info_llm_filter_scene_context,
+        world_info_llm_filter_include_content,
+        world_info_llm_filter_scene_field_max,
+        world_info_llm_filter_content_snippet_max,
+        world_info_llm_filter_shortlist_enabled,
+        world_info_llm_filter_max_candidates,
     };
 }
 
@@ -868,6 +894,12 @@ export function updateWorldInfoSettings(settings, activeWorldInfo) {
         world_info_llm_filter_profile: (value) => world_info_llm_filter_profile = String(value ?? ''),
         world_info_llm_filter_context_messages: (value) => world_info_llm_filter_context_messages = Math.max(1, Math.min(50, Number(value) || 5)),
         world_info_llm_filter_system_prompt: (value) => world_info_llm_filter_system_prompt = String(value ?? ''),
+        world_info_llm_filter_scene_context: (value) => world_info_llm_filter_scene_context = value === undefined ? true : Boolean(value),
+        world_info_llm_filter_include_content: (value) => world_info_llm_filter_include_content = Boolean(value),
+        world_info_llm_filter_scene_field_max: (value) => world_info_llm_filter_scene_field_max = Math.max(50, Math.min(4000, Number(value) || 600)),
+        world_info_llm_filter_content_snippet_max: (value) => world_info_llm_filter_content_snippet_max = Math.max(20, Math.min(1000, Number(value) || 160)),
+        world_info_llm_filter_shortlist_enabled: (value) => world_info_llm_filter_shortlist_enabled = value === undefined ? true : Boolean(value),
+        world_info_llm_filter_max_candidates: (value) => world_info_llm_filter_max_candidates = Math.max(0, Math.min(2000, Math.floor(Number(value)) || 0)),
         // Unused
         world_info: (_value) => { },
     };
@@ -1028,6 +1060,12 @@ export function setWorldInfoSettings(settings, data) {
 
     $('#world_info_llm_filter_enabled').prop('checked', world_info_llm_filter_enabled);
     $('#world_info_llm_filter_context_messages').val(world_info_llm_filter_context_messages);
+    $('#world_info_llm_filter_scene_context').prop('checked', world_info_llm_filter_scene_context);
+    $('#world_info_llm_filter_include_content').prop('checked', world_info_llm_filter_include_content);
+    $('#world_info_llm_filter_scene_field_max').val(world_info_llm_filter_scene_field_max);
+    $('#world_info_llm_filter_content_snippet_max').val(world_info_llm_filter_content_snippet_max);
+    $('#world_info_llm_filter_shortlist_enabled').prop('checked', world_info_llm_filter_shortlist_enabled);
+    $('#world_info_llm_filter_max_candidates').val(world_info_llm_filter_max_candidates);
     $('#world_info_llm_filter_system_prompt').val(world_info_llm_filter_system_prompt);
     renderLlmFilterProfileOptions(world_info_llm_filter_profile);
     toggleLlmFilterControls();
@@ -4703,6 +4741,131 @@ function parseLlmFilterIndices(text, candidateCount) {
 }
 
 /**
+ * Collapse whitespace and clamp a string to a maximum length for prompt inclusion.
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+function clampForFilterPrompt(text, max) {
+    const collapsed = String(text ?? '').replace(/\s+/g, ' ').trim();
+    return collapsed.length > max ? `${collapsed.slice(0, max).trim()}…` : collapsed;
+}
+
+/**
+ * Assemble a compact "scene context" block for the LLM key filter: the user
+ * persona, the active character (or group cast), and — when the world-forge
+ * Scene Tracker is in use — the current location and present cast. This lets the
+ * filter resolve pronouns and keep entries for entities that are in play but not
+ * named in the last few messages.
+ *
+ * The Scene Tracker is an optional extension; its data is read defensively from
+ * chat metadata so the filter still works when it isn't installed.
+ * @returns {string} Newline-joined context lines (empty string if nothing available)
+ */
+function buildLlmFilterSceneContext() {
+    const ctx = getContext();
+    const lines = [];
+
+    // User persona.
+    const personaName = String(name1 || '').trim();
+    const personaDesc = clampForFilterPrompt(substituteParams(String(power_user?.persona_description || '')), world_info_llm_filter_scene_field_max);
+    if (personaName || personaDesc) {
+        lines.push(`User persona: ${personaName || '(unnamed)'}${personaDesc ? ` — ${personaDesc}` : ''}`);
+    }
+
+    // Active character, or group cast.
+    if (ctx.groupId) {
+        const group = (ctx.groups || []).find(g => String(g.id) === String(ctx.groupId));
+        const memberNames = (group?.members || [])
+            .map(avatar => (ctx.characters || []).find(c => c.avatar === avatar))
+            .filter(Boolean)
+            .map(c => String(c.name || '').trim())
+            .filter(Boolean);
+        if (memberNames.length) lines.push(`Group characters: ${memberNames.join(', ')}.`);
+    } else {
+        const char = (ctx.characters || [])[ctx.characterId];
+        if (char) {
+            const name = String(char.name || '').trim();
+            if (name) lines.push(`Active character: ${name}.`);
+            const desc = clampForFilterPrompt(substituteParams(String(char.description || '')), world_info_llm_filter_scene_field_max);
+            if (desc) lines.push(`Character description: ${desc}`);
+            const personality = clampForFilterPrompt(substituteParams(String(char.personality || '')), world_info_llm_filter_scene_field_max);
+            if (personality) lines.push(`Character personality: ${personality}`);
+            const scenario = clampForFilterPrompt(substituteParams(String(char.scenario || '')), world_info_llm_filter_scene_field_max);
+            if (scenario) lines.push(`Scenario: ${scenario}`);
+        }
+    }
+
+    // Scene Tracker (world-forge), if present in chat metadata.
+    const scene = chat_metadata?.world_forge_scene;
+    if (scene && typeof scene === 'object') {
+        const location = String(scene.location || '').trim();
+        if (location) lines.push(`Current location: ${location}.`);
+        const present = (Array.isArray(scene.present) ? scene.present : [])
+            .filter(p => String(p?.name || '').trim());
+        if (present.length) {
+            lines.push(`Present in the scene: ${present.map(p => String(p.name).trim()).join(', ')}.`);
+            // Per-character status from the Scene Tracker so the filter can keep entries
+            // for entities whose situation (injury, mood, attire, last whereabouts) is in
+            // play even when they aren't named in the last few messages.
+            for (const p of present) {
+                const bits = [];
+                if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
+                if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
+                if (String(p.clothing || '').trim()) bits.push(`wearing: ${p.clothing.trim()}`);
+                if (String(p.mood || '').trim()) bits.push(`mood: ${p.mood.trim()}`);
+                if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
+                if (bits.length) lines.push(`  ${String(p.name).trim()} — ${clampForFilterPrompt(bits.join('; '), world_info_llm_filter_scene_field_max)}`);
+            }
+        }
+    }
+
+    return lines.join('\n');
+}
+
+/**
+ * When the eligible candidate set is larger than the configured cap, shortlist it
+ * down to the most promising entries before sending to the LLM filter. This bounds
+ * the filter prompt regardless of world size (many books / many entries), turning
+ * the LLM into a precise reranker over a lexically-pruned set.
+ *
+ * Scoring is a cheap, case-insensitive substring pass over the same recent context
+ * the filter sees (recent messages + author's note + scene context): an entry scores
+ * for each of its keys that appears there, primary keys weighted over secondary.
+ * Entries with any lexical signal rank first; the original WI sort order breaks ties
+ * and fills any remaining budget, so a high-priority entry is never dropped in favour
+ * of a same-score lower-priority one. The kept set is returned in original order so
+ * the prompt indices stay stable and readable.
+ *
+ * @param {object[]} candidates Eligible entries (already filtered), in WI sort order
+ * @param {string} haystack Lowercased recent-context text to score keys against
+ * @param {number} cap Maximum entries to keep (<= 0 or >= length disables shortlisting)
+ * @returns {object[]} The kept candidates (<= cap), preserving original order
+ */
+function shortlistLlmFilterCandidates(candidates, haystack, cap) {
+    if (!Number.isFinite(cap) || cap <= 0 || candidates.length <= cap) return candidates;
+
+    const scored = candidates.map((entry, index) => {
+        let score = 0;
+        for (const k of (entry.key ?? [])) {
+            const key = String(k ?? '').trim().toLowerCase();
+            if (key && haystack.includes(key)) score += 2;
+        }
+        for (const k of (entry.keysecondary ?? [])) {
+            const key = String(k ?? '').trim().toLowerCase();
+            if (key && haystack.includes(key)) score += 1;
+        }
+        return { entry, index, score };
+    });
+
+    // Highest score first; original WI order (index) breaks ties so priority is kept.
+    scored.sort((a, b) => (b.score - a.score) || (a.index - b.index));
+
+    // Keep the top `cap`, then restore original order for stable prompt indices.
+    return scored.slice(0, cap).sort((a, b) => a.index - b.index).map(s => s.entry);
+}
+
+/**
  * Run the LLM key filter: ask a small model which entries are semantically relevant
  * to the recent chat, then mark the chosen ones as externally activated so the
  * downstream scan picks them up without doing keyword matching.
@@ -4718,11 +4881,27 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
     const recent = (Array.isArray(chat) ? chat.slice(0, lastN) : []).reverse(); // chronological order for the prompt
     const authorsNote = String(chat_metadata?.[metadata_keys.prompt] ?? '').trim();
 
-    const candidateLines = candidates.map((entry, i) => {
+    const sceneContext = world_info_llm_filter_scene_context ? buildLlmFilterSceneContext() : '';
+
+    // Shortlist before sending: a cheap lexical pass over the same recent context the
+    // filter sees, used to cap the candidate list so the prompt stays bounded no matter
+    // how large the world is (many books / many entries). The LLM then reranks the
+    // shortlist precisely. <= 0 disables the cap (send everything, original behaviour).
+    const shortlistCap = world_info_llm_filter_shortlist_enabled ? (Number(world_info_llm_filter_max_candidates) || 0) : 0;
+    const haystack = [recent.join('\n'), authorsNote, sceneContext].join('\n').toLowerCase();
+    const filtered = shortlistLlmFilterCandidates(candidates, haystack, shortlistCap);
+
+    const includeContent = !!world_info_llm_filter_include_content;
+    const candidateLines = filtered.map((entry, i) => {
         const title = String(entry.comment || entry.key?.[0] || `entry ${entry.uid}`).slice(0, 80);
         const keys = JSON.stringify((entry.key ?? []).map(k => String(k).slice(0, 40)));
         const secondary = JSON.stringify((entry.keysecondary ?? []).map(k => String(k).slice(0, 40)));
-        return `[${i}] ${title} — keys: ${keys}, secondary: ${secondary}`;
+        let line = `[${i}] ${title} — keys: ${keys}, secondary: ${secondary}`;
+        if (includeContent) {
+            const snippet = clampForFilterPrompt(entry.content, world_info_llm_filter_content_snippet_max);
+            if (snippet) line += `, content: ${JSON.stringify(snippet)}`;
+        }
+        return line;
     }).join('\n');
 
     const systemPrompt = String(world_info_llm_filter_system_prompt || DEFAULT_LLM_FILTER_PROMPT);
@@ -4730,6 +4909,13 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
         systemPrompt,
         '',
     ];
+    if (sceneContext) {
+        promptParts.push(
+            'SCENE CONTEXT (who and where — use to resolve pronouns and off-screen but in-play entities):',
+            sceneContext,
+            '',
+        );
+    }
     if (authorsNote) {
         promptParts.push(
             'AUTHOR’S NOTE (story-beat / scene context — weigh this heavily):',
@@ -4760,12 +4946,12 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
             response: '',
             error: error?.message ?? String(error),
             parsed: null,
-            meta: { candidates: candidates.length },
+            meta: { candidates: filtered.length, eligible: candidates.length },
         });
         throw error;
     }
 
-    const indices = parseLlmFilterIndices(content, candidates.length);
+    const indices = parseLlmFilterIndices(content, filtered.length);
 
     if (!indices) {
         // Fail-open: keep nothing extra; let the normal regex scan run instead.
@@ -4776,13 +4962,13 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
             response: content,
             error: 'Could not parse LLM filter response',
             parsed: null,
-            meta: { candidates: candidates.length },
+            meta: { candidates: filtered.length, eligible: candidates.length },
         });
         throw new Error('Could not parse LLM filter response');
     }
 
     for (const i of indices) {
-        const entry = candidates[i];
+        const entry = filtered[i];
         WorldInfoBuffer.externalActivations.set(`${entry.world}.${entry.uid}`, entry);
     }
 
@@ -4794,12 +4980,12 @@ async function applyLlmKeyFilter(sortedEntries, chat) {
         error: null,
         parsed: {
             indices,
-            kept: indices.map(i => candidates[i]?.comment || candidates[i]?.key?.[0] || `entry ${candidates[i]?.uid}`),
+            kept: indices.map(i => filtered[i]?.comment || filtered[i]?.key?.[0] || `entry ${filtered[i]?.uid}`),
         },
-        meta: { candidates: candidates.length },
+        meta: { candidates: filtered.length, eligible: candidates.length },
     });
 
-    return { ran: true, kept: indices.length, total: candidates.length };
+    return { ran: true, kept: indices.length, total: filtered.length };
 }
 
 /**
@@ -6491,6 +6677,45 @@ export function initWorldInfo() {
         world_info_llm_filter_context_messages = Number.isFinite(value) && value > 0
             ? Math.min(50, Math.max(1, Math.floor(value)))
             : 5;
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_scene_context').on('input', function () {
+        world_info_llm_filter_scene_context = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_include_content').on('input', function () {
+        world_info_llm_filter_include_content = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_scene_field_max').on('input', function () {
+        const value = Number($(this).val());
+        world_info_llm_filter_scene_field_max = Number.isFinite(value) && value > 0
+            ? Math.min(4000, Math.max(50, Math.floor(value)))
+            : 600;
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_content_snippet_max').on('input', function () {
+        const value = Number($(this).val());
+        world_info_llm_filter_content_snippet_max = Number.isFinite(value) && value > 0
+            ? Math.min(1000, Math.max(20, Math.floor(value)))
+            : 160;
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_shortlist_enabled').on('input', function () {
+        world_info_llm_filter_shortlist_enabled = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#world_info_llm_filter_max_candidates').on('input', function () {
+        const value = Number($(this).val());
+        world_info_llm_filter_max_candidates = Number.isFinite(value) && value > 0
+            ? Math.min(2000, Math.floor(value))
+            : 0;
         saveSettingsDebounced();
     });
 

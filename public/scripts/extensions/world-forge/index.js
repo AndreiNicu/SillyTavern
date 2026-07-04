@@ -904,13 +904,19 @@ function buildSceneBlock(scene) {
         const status = [];
         for (const p of present) {
             if (p.role === 'user') continue;
+            // Physical status stays on the character's headline; clothing and mood get
+            // their own indented lines beneath it so they read as distinct facts.
             const bits = [];
             if (String(p.health || '').trim()) bits.push(`health: ${p.health.trim()}`);
             if (String(p.condition || '').trim()) bits.push(`condition: ${p.condition.trim()}`);
-            if (String(p.clothing || '').trim()) bits.push(`wearing: ${p.clothing.trim()}`);
-            if (String(p.mood || '').trim()) bits.push(`mood: ${p.mood.trim()}`);
             if (String(p.lastLocation || '').trim()) bits.push(`last seen: ${p.lastLocation.trim()}`);
-            if (bits.length) status.push(`- ${p.name} — ${bits.join('; ')}`);
+            const extra = [];
+            if (String(p.clothing || '').trim()) extra.push(`  Wearing: ${p.clothing.trim()}`);
+            if (String(p.mood || '').trim()) extra.push(`  Mood: ${p.mood.trim()}`);
+            if (bits.length || extra.length) {
+                status.push(`- ${p.name}${bits.length ? ` — ${bits.join('; ')}` : ''}`);
+                status.push(...extra);
+            }
         }
         if (status.length) {
             lines.push('Character status:');

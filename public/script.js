@@ -11770,6 +11770,8 @@ jQuery(async function () {
 
                 topBar.style.display = 'none';
                 topSettingsHolder.style.display = 'none';
+
+                toastr.info(t`Type /panels in the chat box to bring them back.`, t`UI panels hidden`, { timeOut: 10000 });
             }
             //}
         }

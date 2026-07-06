@@ -1,8 +1,9 @@
 {
-  "schema": 1,
-  "_comment": "Sample [[DICE_TABLES]] payload for the dice oracle (contracts/DICE_ORACLE.md). Paste the JSON below (without this _comment) into the CONTENT of one World-level World Info entry whose COMMENT/title contains the literal token [[DICE_TABLES]]. Keep the entry ENABLED (disable:false) but INERT (no keys, not constant) so it never injects itself — the Scene Tracker's Dice tab reads it out of the raw world data. Tuned for a slice-of-life commune where a free-spirited NPC recounts past flings and conjures temporary men on demand. `framing` is the lead-in prepended to the rolled facts; put HOW to narrate them in your world's system prompt (it can refer to the <dice_oracle> block by name).",
+  "schema": 2,
+  "_comment": "Sample [[DICE_TABLES]] payload for the dice oracle (contracts/DICE_ORACLE.md). Paste the JSON below (without this _comment) into the CONTENT of one World-level World Info entry whose COMMENT/title contains the literal token [[DICE_TABLES]]. Keep the entry ENABLED (disable:false) but INERT (no keys, not constant) so it never injects itself — the Scene Tracker's Dice tab reads it out of the raw world data. Tuned for a slice-of-life commune where a free-spirited NPC recounts past flings, conjures temporary men on demand, and where a random event can break into the scene. Schema 2: a procedure's `mode` is \"recount\" (past, default) or \"event\" (about to happen now) and picks the built-in default framing when you omit one; `turns` sets how many upcoming replies a roll stays armed for (payload default + per-procedure override; the Dice tab can override per roll). `framing` is the lead-in prepended to the rolled facts; put HOW to narrate them in your world's system prompt (it can refer to the <dice_oracle> block by name).",
 
   "framing": "Here is some information regarding this recounted encounter. Treat every detail as an established fact and narrate the memory in-character around them:",
+  "turns": 1,
 
   "pools": {
     "man_build": [
@@ -36,6 +37,14 @@
       "a furniture-assembly disaster",
       "an attempt to be quiet that failed spectacularly",
       "a prank that backfired on both of them"
+    ],
+    "event_kind": [
+      "a sudden summer downpour drives everyone under cover",
+      "an unexpected visitor rolls up the drive",
+      "the power cuts out across the whole commune",
+      "a heated argument erupts two rooms over",
+      "a stray animal wanders in and won't leave",
+      "someone discovers the harvest has gone bad"
     ]
   },
 
@@ -89,6 +98,35 @@
       "steps": [
         { "id": "build", "label": "Build", "pick": "man_build" },
         { "id": "vibe", "label": "Personality", "pick": "man_vibe" }
+      ]
+    },
+    {
+      "id": "scene_event",
+      "label": "Something happens now",
+      "mode": "event",
+      "turns": 3,
+      "framing": "The following is breaking into the scene right now — not a memory. These dice results establish what happens; treat them as true and narrate it unfolding in the present, in-character:",
+      "steps": [
+        { "id": "what", "label": "What happens", "pick": "event_kind" },
+        {
+          "id": "tenor", "label": "How it lands", "roll": "1d20",
+          "outcomes": { "1-8": "trouble", "9-14": "mixed", "15-20": "welcome" },
+          "text": {
+            "trouble": "it makes things harder and puts everyone on edge",
+            "mixed": "it's disruptive but not all bad",
+            "welcome": "it turns out to be a genuinely lucky break"
+          }
+        },
+        {
+          "id": "who", "label": "Who has to deal with it", "roll": "1d6",
+          "outcomes": { "1-3": "the player is pulled in directly", "4-6": "someone already in the scene takes the lead" }
+        },
+        {
+          "id": "lingers", "label": "Does it leave a mark", "roll": "1d10",
+          "outcomes": { "1-6": "no", "7-10": "yes" },
+          "text": { "no": "it blows over cleanly", "yes": "it leaves something to sort out afterward" },
+          "when": { "tenor": ["trouble", "mixed"] }
+        }
       ]
     }
   ]

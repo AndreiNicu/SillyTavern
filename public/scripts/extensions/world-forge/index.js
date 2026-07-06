@@ -1072,9 +1072,11 @@ async function maybeSeedCalendarFromWorld() {
 
 // ------------------------------- dice oracle --------------------------------
 // Manual pre-narration randomizer (Scene Tracker "Dice" tab). The user rolls
-// against world-authored tables BEFORE the model writes a recounted story or a
-// temporary character, and the resolved facts are injected as authoritative
-// context — the dice fix WHAT happened so the model doesn't have to invent it.
+// against world-authored tables BEFORE the model writes a recounted story, a
+// temporary character, or a random event about to happen, and the resolved
+// facts are injected as authoritative context — the dice fix WHAT is true so
+// the model doesn't have to invent it. Procedures carry a tense (recount vs.
+// event, §3.7) and a duration in replies (§3.6); both are snapshotted per roll.
 // Tables come from a world-level [[DICE_TABLES]] lorebook entry (same
 // enabled-but-inert carrier convention as [[WORLD_CALENDAR]]); without one the
 // built-in demo tables below are offered. Payload schema, step grammar, and
@@ -1082,14 +1084,22 @@ async function maybeSeedCalendarFromWorld() {
 const DICE_TABLES_MARKER = '[[DICE_TABLES]]';
 const DICE_PROMPT_KEY = 'world_forge_dice';
 const DICE_META_KEY = 'world_forge_dice';
+// Injection duration (contracts/DICE_ORACLE.md §3.6): how many upcoming model
+// replies a roll stays armed for. 1 = the original single-reply behavior.
+const DICE_DEFAULT_TURNS = 1;
+const DICE_MAX_TURNS = 20;
+// Procedure tenses (§3.7). `recount` is the default/fallback for any other value.
+const DICE_MODE_RECOUNT = 'recount';
+const DICE_MODE_EVENT = 'event';
 
 // Demo fallback so the feature is testable in any world. A world
 // [[DICE_TABLES]] entry with at least one valid procedure fully replaces this.
 const BUILTIN_DICE_TABLES = {
-    schema: 1,
+    schema: 2,
     pools: {
         personality: ['reckless', 'shy and easily flustered', 'boastful', 'gentle', 'hot-tempered', 'deadpan', 'clumsy', 'overconfident'],
         body_type: ['short and wiry', 'tall and lanky', 'broad and heavy-set', 'soft and round', 'compact and athletic', 'gangly, all elbows'],
+        event_kind: ['a sudden change in the weather', 'an unexpected arrival', 'a nearby commotion', 'a small accident', 'a piece of surprising news', 'something breaking or going wrong'],
     },
     procedures: [
         {
@@ -1124,6 +1134,24 @@ const BUILTIN_DICE_TABLES = {
             steps: [
                 { id: 'personality', label: 'Personality', pick: 'personality' },
                 { id: 'body', label: 'Build', pick: 'body_type' },
+            ],
+        },
+        {
+            id: 'random_event',
+            label: 'Random event (happening now)',
+            mode: 'event',
+            turns: 3, // an unfolding event wants to stay in context for a few replies
+            steps: [
+                { id: 'what', label: 'What happens', pick: 'event_kind' },
+                {
+                    id: 'tenor', label: 'How it lands', roll: '1d20',
+                    outcomes: { '1-8': 'trouble', '9-14': 'mixed', '15-20': 'welcome' },
+                    text: { trouble: 'it makes things harder / raises the stakes', mixed: 'it cuts both ways', welcome: 'it turns out to be a lucky break' },
+                },
+                {
+                    id: 'focus', label: 'Who it centers on', roll: '1d6',
+                    outcomes: { '1-3': 'the player', '4-6': 'someone already present' },
+                },
             ],
         },
     ],
@@ -1170,6 +1198,22 @@ function diceWhenSatisfied(when, resolvedKeys) {
     return true;
 }
 
+/**
+ * Coerce a `turns` value (contracts/DICE_ORACLE.md §3.6) to an integer in
+ * [1, DICE_MAX_TURNS], or null when absent/unusable so a caller can fall back.
+ */
+function normDiceTurns(v) {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n) || n < 1) return null;
+    return Math.min(n, DICE_MAX_TURNS);
+}
+
+/** Coerce a procedure `mode` (§3.7) — anything but 'event' is 'recount'. */
+function normDiceMode(v) {
+    return v === DICE_MODE_EVENT ? DICE_MODE_EVENT : DICE_MODE_RECOUNT;
+}
+
 /** A step is a pick (pool name or inline array) XOR a roll with outcomes. */
 function isValidDiceStep(step) {
     if (!step || typeof step !== 'object' || typeof step.id !== 'string' || !step.id) return false;
@@ -1195,6 +1239,8 @@ function normalizeDiceTables(payload) {
             if (values.length) pools[name] = values;
         }
     }
+    // Payload-level defaults; a procedure may override each (§3.5–§3.7).
+    const payloadTurns = normDiceTurns(payload.turns) ?? DICE_DEFAULT_TURNS;
     const procedures = [];
     for (const proc of Array.isArray(payload.procedures) ? payload.procedures : []) {
         if (!proc || typeof proc !== 'object' || typeof proc.id !== 'string' || !proc.id) continue;
@@ -1206,15 +1252,19 @@ function normalizeDiceTables(payload) {
         procedures.push({
             id: proc.id,
             label: typeof proc.label === 'string' && proc.label.trim() ? proc.label.trim() : proc.id,
+            // Recount (past) vs event (about to happen now) — picks the default framing.
+            mode: normDiceMode(proc.mode),
             // Optional per-procedure lead-in for the injected block; falls back
             // to the payload-level `framing`, then the built-in default.
             framing: typeof proc.framing === 'string' ? proc.framing.trim() : '',
+            // Default duration seeded into the UI; procedure overrides payload.
+            turns: normDiceTurns(proc.turns) ?? payloadTurns,
             steps,
         });
     }
     if (!procedures.length) return null;
     const framing = typeof payload.framing === 'string' ? payload.framing.trim() : '';
-    return { pools, procedures, framing };
+    return { pools, procedures, framing, turns: payloadTurns };
 }
 
 /** Read the world's [[DICE_TABLES]] entry; null when absent/unusable. */
@@ -1278,10 +1328,11 @@ function resolveDiceProcedure(tables, proc) {
 
 /**
  * Per-chat oracle state, in chat_metadata (like the scene record). Lifecycle:
- * Roll arms it → the next generation consumes it (swipes of that reply still
- * see the same facts — a swipe retells, it doesn't re-roll history) → the
- * user's NEXT message clears it. Facts are ephemeral by design in v1: never
- * canon, never written to memory (contracts/DICE_ORACLE.md §1).
+ * Roll arms it for `turnsTotal` replies → each generation consumes the current
+ * reply (swipes of that reply still see the same facts — a swipe retells, it
+ * doesn't re-roll history) → the user's NEXT message spends one armed reply,
+ * and the facts clear once `turnsRemaining` hits 0. Facts are ephemeral by
+ * design: never canon, never written to memory (contracts/DICE_ORACLE.md §1).
  */
 function getDiceData() {
     let d = chat_metadata[DICE_META_KEY];
@@ -1293,21 +1344,34 @@ function getDiceData() {
     if (typeof d.consumed !== 'boolean') d.consumed = false;
     if (typeof d.procedureLabel !== 'string') d.procedureLabel = '';
     if (typeof d.framing !== 'string') d.framing = '';
+    if (d.mode !== DICE_MODE_EVENT && d.mode !== DICE_MODE_RECOUNT) d.mode = DICE_MODE_RECOUNT;
+    // How many model replies this roll shapes, and how many are still to come.
+    // Legacy records (pre-duration) default to the original single reply.
+    if (!Number.isFinite(d.turnsTotal) || d.turnsTotal < 1) d.turnsTotal = DICE_DEFAULT_TURNS;
+    if (!Number.isFinite(d.turnsRemaining) || d.turnsRemaining < 0) d.turnsRemaining = d.armed ? d.turnsTotal : 0;
     if (!Array.isArray(d.facts)) d.facts = [];
     d.facts = d.facts.filter(f => f && typeof f === 'object' && typeof f.value === 'string');
     return d;
 }
 
-// Default lead-in when neither the procedure nor the payload supplies a
-// `framing`. Deliberately light: it establishes the facts as true and hands
-// interpretation to the world's own instructions, rather than dictating tone.
+// Default lead-ins when neither the procedure nor the payload supplies a
+// `framing`, keyed by mode (contracts/DICE_ORACLE.md §3.5/§3.7). Deliberately
+// light: they establish the facts as true and hand interpretation to the
+// world's own instructions, rather than dictating tone. The recount default
+// frames a past memory; the event default frames something happening NOW,
+// based on the roll.
 const DEFAULT_DICE_FRAMING = 'Here are the established facts for the memory, encounter, or character being recounted. Treat them as true, and follow this world\'s guidance on how to interpret and narrate them:';
+const DEFAULT_DICE_FRAMING_EVENT = 'The following is happening right now in the scene — not a memory. These dice results establish what unfolds; treat them as true, narrate the event playing out in the present, and follow this world\'s guidance on how to interpret it:';
+
+function defaultDiceFraming(mode) {
+    return mode === DICE_MODE_EVENT ? DEFAULT_DICE_FRAMING_EVENT : DEFAULT_DICE_FRAMING;
+}
 
 function buildDiceBlock(dice) {
     if (!dice.armed || !dice.facts.length) return '';
     // Model-facing facts only — no dice math (that stays in the UI panel).
     const lines = dice.facts.map(f => `- ${f.label || f.id}: ${f.value}`);
-    const framing = dice.framing && dice.framing.trim() ? dice.framing.trim() : DEFAULT_DICE_FRAMING;
+    const framing = dice.framing && dice.framing.trim() ? dice.framing.trim() : defaultDiceFraming(dice.mode);
     return [
         '<dice_oracle>',
         framing,
@@ -1316,7 +1380,7 @@ function buildDiceBlock(dice) {
     ].join('\n');
 }
 
-/** Set/clear the one-shot oracle injection (same engine as the scene block). */
+/** Set/clear the oracle injection while armed (same engine as the scene block). */
 function updateDiceExtensionPrompt() {
     const ctx = getContext();
     const clear = () => ctx.setExtensionPrompt(DICE_PROMPT_KEY, '', extension_prompt_types.NONE, 0);
@@ -1333,9 +1397,12 @@ function disarmDice(clearFacts = false) {
     const dice = getDiceData();
     dice.armed = false;
     dice.consumed = false;
+    dice.turnsRemaining = 0;
     if (clearFacts) {
         dice.facts = [];
         dice.procedureLabel = '';
+        dice.mode = DICE_MODE_RECOUNT;
+        dice.turnsTotal = DICE_DEFAULT_TURNS;
     }
     saveSceneData(); // debounced chat_metadata save (shared with the scene record)
     updateDiceExtensionPrompt();
@@ -1353,14 +1420,29 @@ function onDiceGenerationEnded() {
     }
 }
 
-/** MESSAGE_SENT: the exchange the roll was for is over — let go of the facts. */
+/**
+ * MESSAGE_SENT: the user is advancing past a reply this roll already shaped, so
+ * that turn is now spent. Decrement the remaining count; when it reaches zero
+ * let go of the facts, otherwise re-arm for the next reply. Decrementing here
+ * (not on GENERATION_ENDED) keeps swipes of the same reply free — a swipe
+ * retells the same beat rather than burning a turn.
+ */
 function onDiceMessageSent() {
     if (!getCurrentChatId()) return;
     const dice = getDiceData();
-    if (dice.armed && dice.consumed) {
-        log('dice: exchange over, disarming oracle');
+    if (!dice.armed || !dice.consumed) return;
+    dice.turnsRemaining = Math.max(0, (Number(dice.turnsRemaining) || 1) - 1);
+    if (dice.turnsRemaining <= 0) {
+        log('dice: last armed reply spent, disarming oracle');
         disarmDice();
+        return;
     }
+    // More replies to shape: keep the same facts armed, ready for the next one.
+    dice.consumed = false;
+    log(`dice: reply spent, ${dice.turnsRemaining} of ${dice.turnsTotal} still armed`);
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    if (sceneOpen) renderDicePane();
 }
 
 // ------------------------- dice oracle: UI ---------------------------------
@@ -1395,7 +1477,7 @@ async function loadDiceTables() {
         diceLoaded = true;
     } finally {
         diceLoading = false;
-        if (sceneOpen) renderDicePane();
+        if (sceneOpen) { renderDicePane(); seedDiceTurnsInput(); }
     }
 }
 
@@ -1432,10 +1514,26 @@ function renderDicePane() {
     const dice = getDiceData();
     $result.empty();
     if (dice.armed && dice.facts.length) {
-        const note = dice.consumed
-            ? 'Rolled facts shaped the last reply — swipes reuse them; your next message clears them.'
-            : 'Armed for the next reply. Roll again to replace, or Clear to discard.';
-        $('<div></div>').addClass('wf_dice_armed_note').toggleClass('wf_dice_spent', dice.consumed).text(note).appendTo($result);
+        let note;
+        if (!dice.consumed) {
+            const rem = dice.turnsRemaining || dice.turnsTotal || 1;
+            note = rem > 1
+                ? `Armed — these facts stay in context for the next ${rem} replies. Roll again to replace, or Clear to discard.`
+                : 'Armed for the next reply. Roll again to replace, or Clear to discard.';
+        } else {
+            // This reply is shaped; the count drops on the user's next message.
+            const left = Math.max(0, (dice.turnsRemaining || 1) - 1);
+            note = left > 0
+                ? `Shaped this reply — swipes reuse them. Still armed for ${left} more repl${left === 1 ? 'y' : 'ies'} after this.`
+                : 'Shaped this reply — swipes reuse them; your next message clears them.';
+        }
+        const $note = $('<div></div>').addClass('wf_dice_armed_note').toggleClass('wf_dice_spent', dice.consumed);
+        $('<span></span>').text(note).appendTo($note);
+        const isEvent = dice.mode === DICE_MODE_EVENT;
+        $('<span></span>')
+            .addClass('wf_dice_mode_chip').toggleClass('wf_dice_mode_event', isEvent)
+            .text(isEvent ? 'happening now' : 'recount').appendTo($note);
+        $note.appendTo($result);
         for (const f of dice.facts) {
             const $card = $('<div></div>').addClass('wf_dice_fact');
             $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($card);
@@ -1444,6 +1542,19 @@ function renderDicePane() {
             $card.appendTo($result);
         }
     }
+}
+
+/** Read the Dice tab's duration field, clamped to [1, DICE_MAX_TURNS]. */
+function readDiceTurnsInput() {
+    return normDiceTurns($('#wf_dice_turns').val()) ?? DICE_DEFAULT_TURNS;
+}
+
+/** Seed the duration field from the selected procedure's default (§3.6). */
+function seedDiceTurnsInput() {
+    const $t = $('#wf_dice_turns');
+    if (!$t.length || !diceTables) return;
+    const proc = diceTables.procedures.find(p => p.id === diceSelectedProcedureId);
+    $t.val(proc && Number.isFinite(proc.turns) ? proc.turns : DICE_DEFAULT_TURNS);
 }
 
 function onDiceRoll() {
@@ -1455,18 +1566,23 @@ function onDiceRoll() {
     const facts = resolveDiceProcedure(diceTables, proc);
     if (!facts.length) { setSceneStatus('That procedure produced no facts (check its tables).', true); return; }
 
+    const turns = readDiceTurnsInput();
     const dice = getDiceData();
     dice.facts = facts;
     dice.procedureLabel = proc.label;
-    // Snapshot the lead-in now (per-procedure overrides payload-level), so an
-    // armed roll keeps its framing even if the tables are edited afterward.
+    // Snapshot the lead-in and tense now (per-procedure overrides payload-level),
+    // so an armed roll keeps its framing even if the tables are edited afterward.
     dice.framing = proc.framing || diceTables.framing || '';
+    dice.mode = proc.mode || DICE_MODE_RECOUNT;
+    dice.turnsTotal = turns;
+    dice.turnsRemaining = turns;
     dice.armed = true;
     dice.consumed = false;
     saveSceneData();
     updateDiceExtensionPrompt();
     renderDicePane();
-    setSceneStatus(`Rolled "${proc.label}" — armed for the next reply.`);
+    const forReplies = turns === 1 ? 'the next reply' : `the next ${turns} replies`;
+    setSceneStatus(`Rolled "${proc.label}" — armed for ${forReplies}.`);
 }
 
 /**
@@ -2242,12 +2358,17 @@ const SCENE_WINDOW_HTML = `
             <div id="wf_scene_roster_list" class="wf_scene_list"></div>
         </div>
         <div id="wf_scene_pane_dice" class="wf_scene_pane">
-            <small class="notes" data-i18n="Roll world-authored tables BEFORE the model narrates a recalled story or a temporary character. The rolled facts are injected as authoritative context for the next reply only — the dice fix WHAT happened, the model invents the texture.">Roll world-authored tables BEFORE the model narrates a recalled story or a temporary character. The rolled facts are injected as authoritative context for the next reply only — the dice fix WHAT happened, the model invents the texture.</small>
+            <small class="notes" data-i18n="Roll world-authored tables BEFORE the model narrates a recalled story, a temporary character, or a random event about to happen. The rolled facts are injected as authoritative context for the next reply (or several, if you raise the duration) — the dice fix WHAT is true, the model invents the texture.">Roll world-authored tables BEFORE the model narrates a recalled story, a temporary character, or a random event about to happen. The rolled facts are injected as authoritative context for the next reply (or several, if you raise the duration) — the dice fix WHAT is true, the model invents the texture.</small>
             <div id="wf_dice_source" class="wf_dice_source"></div>
             <div class="wf_dice_pick_row">
                 <select id="wf_dice_procedure" class="text_pole"></select>
                 <div id="wf_dice_reload" class="menu_button menu_button_icon" title="Reload tables from lorebooks"><i class="fa-solid fa-rotate"></i></div>
             </div>
+            <label class="wf_dice_turns_row" title="How many of the model's upcoming replies these rolled facts stay in context for. 1 = the next reply only.">
+                <span data-i18n="Keep armed for">Keep armed for</span>
+                <input id="wf_dice_turns" type="number" class="text_pole wf_dice_turns_input" min="1" max="20" step="1" value="1" />
+                <span data-i18n="reply(ies)">reply(ies)</span>
+            </label>
             <div class="wf_dice_actions">
                 <div id="wf_dice_roll" class="menu_button menu_button_primary"><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
                 <div id="wf_dice_clear" class="menu_button"><i class="fa-solid fa-xmark"></i> <span data-i18n="Clear">Clear</span></div>
@@ -2383,6 +2504,14 @@ const SCENE_CSS = `
 .wf_dice_source.wf_dice_builtin { color: var(--SmartThemeQuoteColor, #6bb1ff); opacity: 0.9; }
 .wf_dice_pick_row { display: flex; gap: 6px; align-items: center; }
 .wf_dice_pick_row .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_dice_turns_row { display: flex; gap: 6px; align-items: center; font-size: 0.85em; opacity: 0.9; margin: 2px 0; }
+.wf_dice_turns_input { width: 4.5em; flex: 0 0 auto; text-align: center; }
+.wf_dice_mode_chip {
+    display: inline-block; font-size: 0.68em; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 1px 6px; border-radius: 999px; border: 1px solid var(--SmartThemeBorderColor, #444);
+    opacity: 0.85; margin-left: 6px; vertical-align: middle;
+}
+.wf_dice_mode_chip.wf_dice_mode_event { color: var(--SmartThemeQuoteColor, #6bb1ff); border-color: currentColor; }
 .wf_dice_actions { display: flex; gap: 6px; }
 .wf_dice_actions .menu_button { flex: 1 1 0; justify-content: center; }
 .wf_dice_result { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
@@ -3130,7 +3259,7 @@ function initSceneTrackerUI() {
         $('#wf_scene_roster_names_only').on('change', renderRoster);
 
         // Dice oracle tab.
-        $('#wf_dice_procedure').on('change', function () { diceSelectedProcedureId = String($(this).val() || ''); });
+        $('#wf_dice_procedure').on('change', function () { diceSelectedProcedureId = String($(this).val() || ''); seedDiceTurnsInput(); });
         $('#wf_dice_reload').on('click', () => { diceLoaded = false; loadDiceTables(); });
         $('#wf_dice_roll').on('click', onDiceRoll);
         $('#wf_dice_clear').on('click', () => {
@@ -3186,10 +3315,11 @@ export function init() {
     // recompute before each generation, and clear/refresh when the chat changes.
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateSceneExtensionPrompt);
     eventSource.on(event_types.CHAT_CHANGED, updateSceneExtensionPrompt);
-    // Dice oracle (manual, one-exchange lifecycle — see contracts/DICE_ORACLE.md):
+    // Dice oracle (manual, N-reply lifecycle — see contracts/DICE_ORACLE.md):
     // keep the injection current before each gen, mark facts spent once a reply
-    // lands, and release them when the user sends the next message. Refresh on
-    // chat change so a stale armed roll from another chat never leaks in.
+    // lands, and count down one armed reply on each user message until the whole
+    // duration is spent. Refresh on chat change so a stale armed roll from
+    // another chat never leaks in.
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateDiceExtensionPrompt);
     eventSource.on(event_types.GENERATION_ENDED, onDiceGenerationEnded);
     eventSource.on(event_types.MESSAGE_SENT, onDiceMessageSent);

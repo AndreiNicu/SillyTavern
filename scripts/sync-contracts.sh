@@ -28,7 +28,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST_DIR="${ROOT}/contracts"
 
 # The set of shared docs. Keep this list in step with contracts/.
-FILES=(MEMORY_CONTRACT.md WORLD_FORGE_SYNC.md)
+FILES=(MEMORY_CONTRACT.md WORLD_FORGE_SYNC.md DICE_ORACLE.md)
 
 MODE="sync"
 if [[ "${1:-}" == "--check" ]]; then

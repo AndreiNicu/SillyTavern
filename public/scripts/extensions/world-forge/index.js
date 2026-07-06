@@ -1339,25 +1339,59 @@ function newDiceEntryId() {
     return `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/**
+ * One rolled procedure's contribution to an entry — its facts plus the
+ * provenance (procedureId, tense, framing) needed to re-roll or un-merge it.
+ * A plain (unmerged) entry has exactly one part; merging concatenates parts.
+ */
+function normalizeDicePart(p) {
+    if (!p || typeof p !== 'object') return null;
+    const facts = (Array.isArray(p.facts) ? p.facts : [])
+        .filter(f => f && typeof f === 'object' && typeof f.value === 'string');
+    if (!facts.length) return null;
+    return {
+        procedureId: typeof p.procedureId === 'string' ? p.procedureId : '',
+        label: typeof p.label === 'string' ? p.label : '',
+        mode: normDiceMode(p.mode),
+        framing: typeof p.framing === 'string' ? p.framing : '',
+        facts,
+    };
+}
+
 /** Coerce one stored entry to a valid shape, or null to drop it. */
 function normalizeDiceEntry(e) {
     if (!e || typeof e !== 'object') return null;
-    const facts = (Array.isArray(e.facts) ? e.facts : [])
-        .filter(f => f && typeof f === 'object' && typeof f.value === 'string');
-    if (!facts.length) return null;
+    // Accept the multi-part shape, or migrate a legacy single-part entry (flat
+    // procedureId/label/mode/framing/facts) into one part so older chats load.
+    const rawParts = Array.isArray(e.parts)
+        ? e.parts
+        : [{ procedureId: e.procedureId, label: e.label, mode: e.mode, framing: e.framing, facts: e.facts }];
+    const parts = rawParts.map(normalizeDicePart).filter(Boolean);
+    if (!parts.length) return null;
     const total = normDiceTurns(e.turnsTotal) ?? DICE_DEFAULT_TURNS;
     const remaining = normDiceTurns(e.turnsRemaining) ?? total;
     return {
         id: typeof e.id === 'string' && e.id ? e.id : newDiceEntryId(),
-        procedureId: typeof e.procedureId === 'string' ? e.procedureId : '',
-        label: typeof e.label === 'string' ? e.label : '',
-        mode: normDiceMode(e.mode),
-        framing: typeof e.framing === 'string' ? e.framing : '',
-        facts,
+        parts,
         turnsTotal: total,
         turnsRemaining: Math.min(remaining, total),
         consumed: e.consumed === true,
     };
+}
+
+/** An entry's effective tense: any 'event' part makes the whole group present-tense. */
+function diceEntryMode(e) {
+    return e.parts.some(p => p.mode === DICE_MODE_EVENT) ? DICE_MODE_EVENT : DICE_MODE_RECOUNT;
+}
+
+/** All facts across an entry's parts, in part-then-step order. */
+function diceEntryFacts(e) {
+    return e.parts.flatMap(p => p.facts);
+}
+
+/** Header label: parts joined so a merged entry reads e.g. "Past fling + Recall". */
+function diceEntryLabel(e) {
+    return e.parts.map(p => p.label || p.procedureId || 'Result').join(' + ') || 'Result';
 }
 
 function getDiceData() {
@@ -1394,16 +1428,26 @@ function defaultDiceFraming(mode) {
     return mode === DICE_MODE_EVENT ? DEFAULT_DICE_FRAMING_EVENT : DEFAULT_DICE_FRAMING;
 }
 
+/**
+ * The lead-in for an entry's combined block: the first part that carries an
+ * explicit framing wins, otherwise the built-in default keyed by the entry's
+ * (merged) tense. Merged parts share one lead-in — that's the point of merging.
+ */
+function diceEntryFraming(e) {
+    const explicit = e.parts.find(p => p.framing && p.framing.trim());
+    return explicit ? explicit.framing.trim() : defaultDiceFraming(diceEntryMode(e));
+}
+
 /** One entry's block: its framing lead-in followed by its `- label: value` facts. */
 function buildDiceEntryText(e) {
-    const framing = e.framing && e.framing.trim() ? e.framing.trim() : defaultDiceFraming(e.mode);
-    const lines = e.facts.map(f => `- ${f.label || f.id}: ${f.value}`);
+    const framing = diceEntryFraming(e);
+    const lines = diceEntryFacts(e).map(f => `- ${f.label || f.id}: ${f.value}`);
     return [framing, ...lines].join('\n');
 }
 
 /** Assemble all kept entries into one model-facing <dice_oracle> block (no dice math). */
 function buildDiceBlock(dice) {
-    const entries = dice.entries.filter(e => e.facts.length);
+    const entries = dice.entries.filter(e => diceEntryFacts(e).length);
     if (!entries.length) return '';
     return [
         '<dice_oracle>',
@@ -1435,6 +1479,7 @@ function updateDiceExtensionPrompt() {
 function clearDiceEntries(id) {
     const dice = getDiceData();
     dice.entries = id ? dice.entries.filter(e => e.id !== id) : [];
+    if (id) diceMergeSelection.delete(id); else diceMergeSelection.clear();
     saveSceneData(); // debounced chat_metadata save (shared with the scene record)
     updateDiceExtensionPrompt();
     if (sceneOpen) renderDicePane();
@@ -1492,6 +1537,8 @@ let diceLoaded = false;
 let diceLoading = false;
 let diceSelectedProcedureId = '';
 let dicePreviewOpen = true; // remember the "Sent to the model" preview's open/closed state
+// Ids of kept results ticked for merging (survives re-render; pruned to live entries).
+const diceMergeSelection = new Set();
 
 async function loadDiceTables() {
     if (diceLoading) return;
@@ -1552,30 +1599,68 @@ function renderDicePane() {
     // Render the kept results (each survives tab/chat re-open until spent or
     // removed), then a preview of the exact text this injects into the prompt.
     const dice = getDiceData();
+    // Drop selections whose entries no longer exist (spent/removed since last render).
+    const liveIds = new Set(dice.entries.map(e => e.id));
+    for (const sel of [...diceMergeSelection]) if (!liveIds.has(sel)) diceMergeSelection.delete(sel);
+
     $result.empty();
     if (!dice.entries.length) return;
 
+    // Selection + merge are only meaningful once more than one result is kept.
+    const selectable = dice.entries.length > 1;
+    if (!selectable) diceMergeSelection.clear();
+
+    // "Merge selected" control — appears once two or more kept results are ticked.
+    if (diceMergeSelection.size >= 2) {
+        const $bar = $('<div></div>').addClass('wf_dice_merge_bar');
+        $('<div></div>').addClass('menu_button menu_button_primary wf_dice_merge_btn')
+            .attr('title', 'Combine the ticked results into a single prompt block under one lead-in.')
+            .html(`<i class="fa-solid fa-object-group"></i> <span>Merge selected (${diceMergeSelection.size})</span>`)
+            .on('click', () => mergeDiceEntries(new Set(diceMergeSelection))).appendTo($bar);
+        $bar.appendTo($result);
+    }
+
     for (const e of dice.entries) {
-        const $card = $('<div></div>').addClass('wf_dice_entry').toggleClass('wf_dice_spent', e.consumed);
+        const merged = e.parts.length > 1;
+        const $card = $('<div></div>').addClass('wf_dice_entry')
+            .toggleClass('wf_dice_spent', e.consumed).toggleClass('wf_dice_merged', merged);
         const $head = $('<div></div>').addClass('wf_dice_entry_head');
-        $('<span></span>').addClass('wf_dice_entry_label').text(e.label || e.procedureId || 'Result').appendTo($head);
-        const isEvent = e.mode === DICE_MODE_EVENT;
+        if (selectable) {
+            $('<input>').attr('type', 'checkbox').addClass('wf_dice_entry_check')
+                .attr('title', 'Select for merging').prop('checked', diceMergeSelection.has(e.id))
+                .on('change', function () {
+                    if (this.checked) diceMergeSelection.add(e.id); else diceMergeSelection.delete(e.id);
+                    renderDicePane();
+                }).appendTo($head);
+        }
+        $('<span></span>').addClass('wf_dice_entry_label').text(diceEntryLabel(e)).appendTo($head);
+        const isEvent = diceEntryMode(e) === DICE_MODE_EVENT;
         $('<span></span>').addClass('wf_dice_mode_chip').toggleClass('wf_dice_mode_event', isEvent)
             .text(isEvent ? 'happening now' : 'recount').appendTo($head);
         $('<span></span>').addClass('wf_dice_entry_turns').text(diceEntryTurnsNote(e)).appendTo($head);
         const $btns = $('<span></span>').addClass('wf_dice_entry_btns');
         $('<div></div>').addClass('wf_dice_entry_btn menu_button menu_button_icon').attr('title', 'Re-roll this result')
             .html('<i class="fa-solid fa-rotate"></i>').on('click', () => rerollDiceEntry(e.id)).appendTo($btns);
+        if (merged) {
+            $('<div></div>').addClass('wf_dice_entry_btn menu_button menu_button_icon').attr('title', 'Split back into separate results')
+                .html('<i class="fa-solid fa-object-ungroup"></i>').on('click', () => splitDiceEntry(e.id)).appendTo($btns);
+        }
         $('<div></div>').addClass('wf_dice_entry_btn menu_button menu_button_icon').attr('title', 'Remove this result')
             .html('<i class="fa-solid fa-xmark"></i>').on('click', () => clearDiceEntries(e.id)).appendTo($btns);
         $btns.appendTo($head);
         $head.appendTo($card);
-        for (const f of e.facts) {
-            const $fact = $('<div></div>').addClass('wf_dice_fact');
-            $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($fact);
-            $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($fact);
-            if (f.detail) $('<div></div>').addClass('wf_dice_fact_detail').text(f.detail).appendTo($fact);
-            $fact.appendTo($card);
+        // Facts grouped by part; a merged entry labels each part so provenance stays legible.
+        for (const part of e.parts) {
+            if (merged) {
+                $('<div></div>').addClass('wf_dice_part_label').text(part.label || part.procedureId || 'Result').appendTo($card);
+            }
+            for (const f of part.facts) {
+                const $fact = $('<div></div>').addClass('wf_dice_fact');
+                $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($fact);
+                $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($fact);
+                if (f.detail) $('<div></div>').addClass('wf_dice_fact_detail').text(f.detail).appendTo($fact);
+                $fact.appendTo($card);
+            }
         }
         $card.appendTo($result);
     }
@@ -1631,11 +1716,13 @@ function onDiceRoll() {
     // so a kept result keeps its framing even if the tables are edited afterward.
     dice.entries.push({
         id: newDiceEntryId(),
-        procedureId: proc.id,
-        label: proc.label,
-        mode: proc.mode || DICE_MODE_RECOUNT,
-        framing: proc.framing || diceTables.framing || '',
-        facts,
+        parts: [{
+            procedureId: proc.id,
+            label: proc.label,
+            mode: proc.mode || DICE_MODE_RECOUNT,
+            framing: proc.framing || diceTables.framing || '',
+            facts,
+        }],
         turnsTotal: turns,
         turnsRemaining: turns,
         consumed: false,
@@ -1647,28 +1734,88 @@ function onDiceRoll() {
     setSceneStatus(`Added "${proc.label}" — ${n} result${n === 1 ? '' : 's'} kept.`);
 }
 
-/** Re-roll one kept entry in place so the user can try alternatives until happy. */
+/**
+ * Re-roll one kept entry in place so the user can try alternatives until happy.
+ * A merged entry re-rolls every part it holds; a part whose procedure has since
+ * left this world's tables keeps its existing facts rather than vanishing.
+ */
 function rerollDiceEntry(id) {
     if (!getCurrentChatId()) { setSceneStatus('Open a chat before rolling.', true); return; }
     if (!diceLoaded || !diceTables) { void loadDiceTables(); return; }
     const dice = getDiceData();
     const entry = dice.entries.find(e => e.id === id);
     if (!entry) return;
-    const proc = diceTables.procedures.find(p => p.id === entry.procedureId);
-    if (!proc) { setSceneStatus('That procedure is no longer in this world\'s tables — can\'t re-roll.', true); return; }
-    const facts = resolveDiceProcedure(diceTables, proc);
-    if (!facts.length) { setSceneStatus('Re-roll produced no facts (check its tables).', true); return; }
-    // Replace this entry's facts and restart its countdown — it's a fresh roll.
-    entry.facts = facts;
-    entry.label = proc.label;
-    entry.mode = proc.mode || DICE_MODE_RECOUNT;
-    entry.framing = proc.framing || diceTables.framing || '';
+    let rolled = 0;
+    for (const part of entry.parts) {
+        const proc = diceTables.procedures.find(p => p.id === part.procedureId);
+        if (!proc) continue; // procedure gone from this world's tables — keep its old facts
+        const facts = resolveDiceProcedure(diceTables, proc);
+        if (!facts.length) continue;
+        part.facts = facts;
+        part.label = proc.label;
+        part.mode = proc.mode || DICE_MODE_RECOUNT;
+        part.framing = proc.framing || diceTables.framing || '';
+        rolled++;
+    }
+    if (!rolled) { setSceneStatus('Re-roll produced no facts (procedure missing or empty tables).', true); return; }
+    // Restart the countdown — it's a fresh roll.
     entry.turnsRemaining = entry.turnsTotal;
     entry.consumed = false;
     saveSceneData();
     updateDiceExtensionPrompt();
     renderDicePane();
-    setSceneStatus(`Re-rolled "${proc.label}".`);
+    setSceneStatus(`Re-rolled "${diceEntryLabel(entry)}".`);
+}
+
+/**
+ * Merge two or more kept results into a single entry, so their facts inject as
+ * one <dice_oracle> group under one lead-in (e.g. a temp NPC + the recount that
+ * conjured him). The merged entry keeps every part's provenance so it can still
+ * be re-rolled or split back apart; its tense is present if any part is an event,
+ * and it re-arms for the longest of the merged durations.
+ */
+function mergeDiceEntries(ids) {
+    const dice = getDiceData();
+    const chosen = dice.entries.filter(e => ids.has(e.id));
+    if (chosen.length < 2) return;
+    const merged = {
+        id: newDiceEntryId(),
+        parts: chosen.flatMap(e => e.parts),
+        turnsTotal: Math.max(...chosen.map(e => e.turnsTotal || DICE_DEFAULT_TURNS)),
+        turnsRemaining: 0,
+        consumed: false,
+    };
+    merged.turnsRemaining = merged.turnsTotal;
+    // Drop the chosen entries and drop the merged one in at the first's position.
+    const firstIdx = dice.entries.findIndex(e => ids.has(e.id));
+    dice.entries = dice.entries.filter(e => !ids.has(e.id));
+    dice.entries.splice(firstIdx, 0, merged);
+    diceMergeSelection.clear();
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    renderDicePane();
+    setSceneStatus(`Merged ${chosen.length} results into one prompt.`);
+}
+
+/** Split a merged entry back into one separate kept result per part. */
+function splitDiceEntry(id) {
+    const dice = getDiceData();
+    const idx = dice.entries.findIndex(e => e.id === id);
+    if (idx < 0) return;
+    const entry = dice.entries[idx];
+    if (entry.parts.length < 2) return;
+    const pieces = entry.parts.map(part => ({
+        id: newDiceEntryId(),
+        parts: [part],
+        turnsTotal: entry.turnsTotal,
+        turnsRemaining: entry.turnsRemaining,
+        consumed: entry.consumed,
+    }));
+    dice.entries.splice(idx, 1, ...pieces);
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    renderDicePane();
+    setSceneStatus(`Split into ${pieces.length} separate results.`);
 }
 
 /**
@@ -2456,7 +2603,7 @@ const SCENE_WINDOW_HTML = `
                 <span data-i18n="reply(ies)">reply(ies)</span>
             </label>
             <div class="wf_dice_actions">
-                <div id="wf_dice_roll" class="menu_button menu_button_primary" title="Roll the selected procedure and add the result to the list below. Rolls stack — re-roll (↻) or remove (✕) any of them."><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
+                <div id="wf_dice_roll" class="menu_button menu_button_primary" title="Roll the selected procedure and add the result to the list below. Rolls stack — re-roll (↻) or remove (✕) any of them, or tick two and Merge them into one prompt."><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
                 <div id="wf_dice_clear" class="menu_button" title="Remove all kept results"><i class="fa-solid fa-xmark"></i> <span data-i18n="Clear">Clear</span></div>
             </div>
             <div id="wf_dice_result" class="wf_dice_result"></div>
@@ -2610,11 +2757,23 @@ const SCENE_CSS = `
     display: flex; flex-direction: column; gap: 4px;
 }
 .wf_dice_entry.wf_dice_spent { opacity: 0.7; }
+/* A merged entry (several rolls under one lead-in) gets an accent edge. */
+.wf_dice_entry.wf_dice_merged { border-left: 2px solid var(--SmartThemeQuoteColor, #6bb1ff); }
 .wf_dice_entry_head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf_dice_entry_check { margin: 0; flex: 0 0 auto; cursor: pointer; }
 .wf_dice_entry_label { font-weight: 600; font-size: 0.9em; }
 .wf_dice_entry_turns { font-size: 0.7em; opacity: 0.6; }
 .wf_dice_entry_btns { margin-left: auto; display: flex; gap: 4px; }
 .wf_dice_entry_btn { padding: 2px 7px; font-size: 0.82em; }
+/* Bar with the "Merge selected" action; shows once two results are ticked. */
+.wf_dice_merge_bar { display: flex; justify-content: flex-end; }
+.wf_dice_merge_btn { font-size: 0.82em; padding: 4px 10px; }
+/* Sub-heading naming each part inside a merged entry, for provenance. */
+.wf_dice_part_label {
+    font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em;
+    opacity: 0.75; font-weight: 600; margin-top: 2px;
+    color: var(--SmartThemeQuoteColor, #6bb1ff);
+}
 .wf_dice_fact { display: flex; flex-direction: column; gap: 2px; }
 .wf_dice_fact_label { font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; }
 .wf_dice_fact_value { font-size: 0.95em; }
@@ -3377,6 +3536,7 @@ function initSceneTrackerUI() {
             // invalidate so the Dice tab re-reads on next open.
             diceLoaded = false;
             diceTables = null;
+            diceMergeSelection.clear();
             if (sceneOpen) {
                 renderScene();
                 if ($('.wf_scene_tab[data-tab="roster"]').hasClass('wf_scene_tab_active')) loadRoster();

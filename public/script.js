@@ -12351,8 +12351,6 @@ jQuery(async function () {
             $('body').append(newElement);
             newElement.fadeIn(animation_duration);
             const zoomedAvatarImgElement = $(`.zoomed_avatar[forChar="${charname}"] .zoomed_avatar_img`);
-            const zoomedAvatarVideoElement = $(`.zoomed_avatar[forChar="${charname}"] .zoomed_avatar_video`);
-            const zoomedAvatarToggleElement = $(`.zoomed_avatar[forChar="${charname}"] .zoomed_avatar_toggle`);
             const isCharAvatar = messageElement.attr('is_user') !== 'true' && !(messageElement.attr('is_system') === 'true' && !isValidCharacter);
             if (messageElement.attr('is_user') == 'true' || (messageElement.attr('is_system') == 'true' && !isValidCharacter)) {
                 //handle user and system avatars

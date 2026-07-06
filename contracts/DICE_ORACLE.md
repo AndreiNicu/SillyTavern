@@ -230,21 +230,31 @@ depend on these details, but they explain what the tables drive.
 - **Dice tab** in the Scene Tracker window: a procedure picker, a **duration**
   control (how many upcoming replies to keep the facts armed for, §3.6, seeded
   from the procedure/payload `turns` default), **Roll** and **Clear** buttons,
-  and the resolved facts with their dice detail (`1d20 → 12`). Rolling again
-  re-rolls the whole procedure and replaces the facts. Tables load lazily when
-  the tab is first opened and re-read when the chat changes.
-- **Injection**: while armed, the facts are injected near the end of the chat
-  as a system-role `<dice_oracle>` block: the `framing` lead-in (§3.5), chosen
-  by `mode` (§3.7) when the world supplies none, followed by a clean
-  `- label: value` list of the resolved facts. The dice math (which formula
-  rolled what) stays in the UI panel and is **not** sent to the model.
-- **N-reply lifecycle**: a roll **arms** the oracle for **N** replies (the
-  rolled duration, §3.6; default 1). Each generation consumes the current reply
+  and the resolved facts with their dice detail (`1d20 → 12`). Tables load
+  lazily when the tab is first opened and re-read when the chat changes.
+- **Kept results (stacking)**: each **Roll** *adds* a result to a list rather
+  than replacing the previous one, so several can be armed at once (e.g. two
+  temporary NPCs plus an unfolding event). Every kept result carries its own
+  tense, framing, and duration. The user can **re-roll** a single result in
+  place (to try alternatives until they like one), **remove** an individual
+  result, or **Clear** all of them.
+- **Prompt preview**: the tab shows the exact `<dice_oracle>` text the kept
+  results currently inject (after macro substitution) — the same string sent to
+  the model — so the author can see precisely what the roll contributes.
+- **Injection**: while any result is kept, they are injected together near the
+  end of the chat as one system-role `<dice_oracle>` block — each result is its
+  own group (its `framing` lead-in, chosen by `mode` (§3.7) when the world
+  supplies none, followed by a clean `- label: value` list), groups separated
+  by a blank line. The dice math (which formula rolled what) stays in the UI
+  panel and is **not** sent to the model.
+- **N-reply lifecycle**: a result is armed for **N** replies (its rolled
+  duration, §3.6; default 1). Each generation consumes the current reply
   (swipes/regenerations of that reply still see the same facts — a swipe means
-  "retell it", not "re-roll history"); sending the following user message
-  advances to the next armed reply, and the facts are released once all N
-  replies have been shaped. **Clear** disarms at any point. N = 1 reproduces the
-  original one-exchange behavior.
+  "retell it", not "re-roll history"); sending the following user message spends
+  one reply from **every** armed result, and a result is released once its own N
+  replies have been shaped (results with different durations expire
+  independently). **Clear** disarms everything at any point. N = 1 with a single
+  kept result reproduces the original one-exchange behavior.
 - **Precedence**: a world `[[DICE_TABLES]]` entry with at least one valid
   procedure **fully replaces** the extension's built-in demo tables (no
   per-procedure merging). Otherwise the built-ins are offered so the feature

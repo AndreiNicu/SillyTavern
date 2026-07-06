@@ -1327,30 +1327,57 @@ function resolveDiceProcedure(tables, proc) {
 }
 
 /**
- * Per-chat oracle state, in chat_metadata (like the scene record). Lifecycle:
- * Roll arms it for `turnsTotal` replies → each generation consumes the current
- * reply (swipes of that reply still see the same facts — a swipe retells, it
- * doesn't re-roll history) → the user's NEXT message spends one armed reply,
- * and the facts clear once `turnsRemaining` hits 0. Facts are ephemeral by
- * design: never canon, never written to memory (contracts/DICE_ORACLE.md §1).
+ * Per-chat oracle state, in chat_metadata (like the scene record). Holds a LIST
+ * of kept results (`entries`): rolling ADDS one, so several can be armed at once
+ * (e.g. two temp NPCs plus an event). Each entry counts down independently over
+ * its own `turnsTotal` replies and drops out when spent; the user can re-roll or
+ * remove any entry, and Clear removes them all. All entries are injected together
+ * as one <dice_oracle> block. Entries are ephemeral by design: never canon, never
+ * written to memory (contracts/DICE_ORACLE.md §1).
  */
+function newDiceEntryId() {
+    return `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Coerce one stored entry to a valid shape, or null to drop it. */
+function normalizeDiceEntry(e) {
+    if (!e || typeof e !== 'object') return null;
+    const facts = (Array.isArray(e.facts) ? e.facts : [])
+        .filter(f => f && typeof f === 'object' && typeof f.value === 'string');
+    if (!facts.length) return null;
+    const total = normDiceTurns(e.turnsTotal) ?? DICE_DEFAULT_TURNS;
+    const remaining = normDiceTurns(e.turnsRemaining) ?? total;
+    return {
+        id: typeof e.id === 'string' && e.id ? e.id : newDiceEntryId(),
+        procedureId: typeof e.procedureId === 'string' ? e.procedureId : '',
+        label: typeof e.label === 'string' ? e.label : '',
+        mode: normDiceMode(e.mode),
+        framing: typeof e.framing === 'string' ? e.framing : '',
+        facts,
+        turnsTotal: total,
+        turnsRemaining: Math.min(remaining, total),
+        consumed: e.consumed === true,
+    };
+}
+
 function getDiceData() {
     let d = chat_metadata[DICE_META_KEY];
     if (!d || typeof d !== 'object') {
         d = {};
         chat_metadata[DICE_META_KEY] = d;
     }
-    if (typeof d.armed !== 'boolean') d.armed = false;
-    if (typeof d.consumed !== 'boolean') d.consumed = false;
-    if (typeof d.procedureLabel !== 'string') d.procedureLabel = '';
-    if (typeof d.framing !== 'string') d.framing = '';
-    if (d.mode !== DICE_MODE_EVENT && d.mode !== DICE_MODE_RECOUNT) d.mode = DICE_MODE_RECOUNT;
-    // How many model replies this roll shapes, and how many are still to come.
-    // Legacy records (pre-duration) default to the original single reply.
-    if (!Number.isFinite(d.turnsTotal) || d.turnsTotal < 1) d.turnsTotal = DICE_DEFAULT_TURNS;
-    if (!Number.isFinite(d.turnsRemaining) || d.turnsRemaining < 0) d.turnsRemaining = d.armed ? d.turnsTotal : 0;
-    if (!Array.isArray(d.facts)) d.facts = [];
-    d.facts = d.facts.filter(f => f && typeof f === 'object' && typeof f.value === 'string');
+    if (!Array.isArray(d.entries)) {
+        // Migrate a legacy single-slot record (pre-accumulation) into one entry.
+        const legacy = (d.armed && Array.isArray(d.facts) && d.facts.length)
+            ? normalizeDiceEntry({
+                procedureId: '', label: d.procedureLabel, mode: d.mode, framing: d.framing,
+                facts: d.facts, turnsTotal: d.turnsTotal, turnsRemaining: d.turnsRemaining, consumed: d.consumed,
+            })
+            : null;
+        d.entries = legacy ? [legacy] : [];
+        for (const k of ['armed', 'consumed', 'facts', 'procedureLabel', 'framing', 'mode', 'turnsTotal', 'turnsRemaining']) delete d[k];
+    }
+    d.entries = d.entries.map(normalizeDiceEntry).filter(Boolean);
     return d;
 }
 
@@ -1367,79 +1394,90 @@ function defaultDiceFraming(mode) {
     return mode === DICE_MODE_EVENT ? DEFAULT_DICE_FRAMING_EVENT : DEFAULT_DICE_FRAMING;
 }
 
+/** One entry's block: its framing lead-in followed by its `- label: value` facts. */
+function buildDiceEntryText(e) {
+    const framing = e.framing && e.framing.trim() ? e.framing.trim() : defaultDiceFraming(e.mode);
+    const lines = e.facts.map(f => `- ${f.label || f.id}: ${f.value}`);
+    return [framing, ...lines].join('\n');
+}
+
+/** Assemble all kept entries into one model-facing <dice_oracle> block (no dice math). */
 function buildDiceBlock(dice) {
-    if (!dice.armed || !dice.facts.length) return '';
-    // Model-facing facts only — no dice math (that stays in the UI panel).
-    const lines = dice.facts.map(f => `- ${f.label || f.id}: ${f.value}`);
-    const framing = dice.framing && dice.framing.trim() ? dice.framing.trim() : defaultDiceFraming(dice.mode);
+    const entries = dice.entries.filter(e => e.facts.length);
+    if (!entries.length) return '';
     return [
         '<dice_oracle>',
-        framing,
-        ...lines,
+        entries.map(buildDiceEntryText).join('\n\n'),
         '</dice_oracle>',
     ].join('\n');
 }
 
-/** Set/clear the oracle injection while armed (same engine as the scene block). */
+/** The exact text injected into the prompt (after macro substitution), or ''. */
+function diceInjectedText() {
+    const block = buildDiceBlock(getDiceData());
+    return block ? substituteParams(block) : '';
+}
+
+/** Set/clear the oracle injection while any entry is armed (same engine as the scene block). */
 function updateDiceExtensionPrompt() {
     const ctx = getContext();
     const clear = () => ctx.setExtensionPrompt(DICE_PROMPT_KEY, '', extension_prompt_types.NONE, 0);
     if (!getCurrentChatId()) return clear();
-    const block = buildDiceBlock(getDiceData());
-    if (!block) return clear();
-    // Fixed placement in v1: system role, in-chat at depth 1 — right above the
-    // user's latest message, where a one-shot directive binds strongest.
-    ctx.setExtensionPrompt(DICE_PROMPT_KEY, substituteParams(block), extension_prompt_types.IN_CHAT, 1, false, extension_prompt_roles.SYSTEM);
-    log('→ dice_oracle set as extension prompt', { facts: getDiceData().facts.length });
+    const text = diceInjectedText();
+    if (!text) return clear();
+    // System role, in-chat at depth 1 — right above the user's latest message,
+    // where a directive binds strongest.
+    ctx.setExtensionPrompt(DICE_PROMPT_KEY, text, extension_prompt_types.IN_CHAT, 1, false, extension_prompt_roles.SYSTEM);
+    log('→ dice_oracle set as extension prompt', { entries: getDiceData().entries.length });
 }
 
-function disarmDice(clearFacts = false) {
+/** Remove one kept entry by id; with no id, clear them all. */
+function clearDiceEntries(id) {
     const dice = getDiceData();
-    dice.armed = false;
-    dice.consumed = false;
-    dice.turnsRemaining = 0;
-    if (clearFacts) {
-        dice.facts = [];
-        dice.procedureLabel = '';
-        dice.mode = DICE_MODE_RECOUNT;
-        dice.turnsTotal = DICE_DEFAULT_TURNS;
-    }
+    dice.entries = id ? dice.entries.filter(e => e.id !== id) : [];
     saveSceneData(); // debounced chat_metadata save (shared with the scene record)
     updateDiceExtensionPrompt();
     if (sceneOpen) renderDicePane();
 }
 
-/** GENERATION_ENDED: the armed facts have shaped a reply — mark them spent. */
+/** GENERATION_ENDED: every armed entry has now shaped a reply — mark them spent. */
 function onDiceGenerationEnded() {
     if (!getCurrentChatId()) return;
     const dice = getDiceData();
-    if (dice.armed && !dice.consumed) {
-        dice.consumed = true;
+    let changed = false;
+    for (const e of dice.entries) {
+        if (!e.consumed) { e.consumed = true; changed = true; }
+    }
+    if (changed) {
         saveSceneData();
         if (sceneOpen) renderDicePane();
     }
 }
 
 /**
- * MESSAGE_SENT: the user is advancing past a reply this roll already shaped, so
- * that turn is now spent. Decrement the remaining count; when it reaches zero
- * let go of the facts, otherwise re-arm for the next reply. Decrementing here
- * (not on GENERATION_ENDED) keeps swipes of the same reply free — a swipe
- * retells the same beat rather than burning a turn.
+ * MESSAGE_SENT: the user is advancing past a reply the armed entries shaped, so
+ * each spent entry burns one of its remaining replies; entries that reach zero
+ * drop out and the rest re-arm for the next reply. Decrementing here (not on
+ * GENERATION_ENDED) keeps swipes free — a swipe retells the same beat. Entries
+ * added since the last generation aren't consumed yet, so they wait untouched.
  */
 function onDiceMessageSent() {
     if (!getCurrentChatId()) return;
     const dice = getDiceData();
-    if (!dice.armed || !dice.consumed) return;
-    dice.turnsRemaining = Math.max(0, (Number(dice.turnsRemaining) || 1) - 1);
-    if (dice.turnsRemaining <= 0) {
-        log('dice: last armed reply spent, disarming oracle');
-        disarmDice();
-        return;
+    if (!dice.entries.length) return;
+    const before = dice.entries.length;
+    let changed = false;
+    const kept = [];
+    for (const e of dice.entries) {
+        if (!e.consumed) { kept.push(e); continue; }
+        e.turnsRemaining = Math.max(0, (Number(e.turnsRemaining) || 1) - 1);
+        e.consumed = false;
+        changed = true;
+        if (e.turnsRemaining > 0) kept.push(e);
     }
-    // More replies to shape: keep the same facts armed, ready for the next one.
-    dice.consumed = false;
-    log(`dice: reply spent, ${dice.turnsRemaining} of ${dice.turnsTotal} still armed`);
+    if (!changed && kept.length === before) return;
+    dice.entries = kept;
+    log(`dice: reply spent, ${kept.length} entr${kept.length === 1 ? 'y' : 'ies'} still armed`);
     saveSceneData();
     updateDiceExtensionPrompt();
     if (sceneOpen) renderDicePane();
@@ -1453,6 +1491,7 @@ let diceUsingBuiltin = false;
 let diceLoaded = false;
 let diceLoading = false;
 let diceSelectedProcedureId = '';
+let dicePreviewOpen = true; // remember the "Sent to the model" preview's open/closed state
 
 async function loadDiceTables() {
     if (diceLoading) return;
@@ -1510,38 +1549,57 @@ function renderDicePane() {
     $select.val(diceSelectedProcedureId);
     $('#wf_dice_roll').toggleClass('wf_dice_disabled', procedures.length === 0);
 
-    // Render the currently-armed facts (survives tab/chat re-open until cleared).
+    // Render the kept results (each survives tab/chat re-open until spent or
+    // removed), then a preview of the exact text this injects into the prompt.
     const dice = getDiceData();
     $result.empty();
-    if (dice.armed && dice.facts.length) {
-        let note;
-        if (!dice.consumed) {
-            const rem = dice.turnsRemaining || dice.turnsTotal || 1;
-            note = rem > 1
-                ? `Armed — these facts stay in context for the next ${rem} replies. Roll again to replace, or Clear to discard.`
-                : 'Armed for the next reply. Roll again to replace, or Clear to discard.';
-        } else {
-            // This reply is shaped; the count drops on the user's next message.
-            const left = Math.max(0, (dice.turnsRemaining || 1) - 1);
-            note = left > 0
-                ? `Shaped this reply — swipes reuse them. Still armed for ${left} more repl${left === 1 ? 'y' : 'ies'} after this.`
-                : 'Shaped this reply — swipes reuse them; your next message clears them.';
+    if (!dice.entries.length) return;
+
+    for (const e of dice.entries) {
+        const $card = $('<div></div>').addClass('wf_dice_entry').toggleClass('wf_dice_spent', e.consumed);
+        const $head = $('<div></div>').addClass('wf_dice_entry_head');
+        $('<span></span>').addClass('wf_dice_entry_label').text(e.label || e.procedureId || 'Result').appendTo($head);
+        const isEvent = e.mode === DICE_MODE_EVENT;
+        $('<span></span>').addClass('wf_dice_mode_chip').toggleClass('wf_dice_mode_event', isEvent)
+            .text(isEvent ? 'happening now' : 'recount').appendTo($head);
+        $('<span></span>').addClass('wf_dice_entry_turns').text(diceEntryTurnsNote(e)).appendTo($head);
+        const $btns = $('<span></span>').addClass('wf_dice_entry_btns');
+        $('<div></div>').addClass('wf_dice_entry_btn menu_button menu_button_icon').attr('title', 'Re-roll this result')
+            .html('<i class="fa-solid fa-rotate"></i>').on('click', () => rerollDiceEntry(e.id)).appendTo($btns);
+        $('<div></div>').addClass('wf_dice_entry_btn menu_button menu_button_icon').attr('title', 'Remove this result')
+            .html('<i class="fa-solid fa-xmark"></i>').on('click', () => clearDiceEntries(e.id)).appendTo($btns);
+        $btns.appendTo($head);
+        $head.appendTo($card);
+        for (const f of e.facts) {
+            const $fact = $('<div></div>').addClass('wf_dice_fact');
+            $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($fact);
+            $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($fact);
+            if (f.detail) $('<div></div>').addClass('wf_dice_fact_detail').text(f.detail).appendTo($fact);
+            $fact.appendTo($card);
         }
-        const $note = $('<div></div>').addClass('wf_dice_armed_note').toggleClass('wf_dice_spent', dice.consumed);
-        $('<span></span>').text(note).appendTo($note);
-        const isEvent = dice.mode === DICE_MODE_EVENT;
-        $('<span></span>')
-            .addClass('wf_dice_mode_chip').toggleClass('wf_dice_mode_event', isEvent)
-            .text(isEvent ? 'happening now' : 'recount').appendTo($note);
-        $note.appendTo($result);
-        for (const f of dice.facts) {
-            const $card = $('<div></div>').addClass('wf_dice_fact');
-            $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($card);
-            $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($card);
-            if (f.detail) $('<div></div>').addClass('wf_dice_fact_detail').text(f.detail).appendTo($card);
-            $card.appendTo($result);
-        }
+        $card.appendTo($result);
     }
+
+    // Exact text sent to the model (after macro substitution), so the user can
+    // see what the roll actually injects into the prompt.
+    const injected = diceInjectedText();
+    if (injected) {
+        const $pv = $('<details></details>').addClass('wf_dice_preview').prop('open', dicePreviewOpen);
+        $pv.on('toggle', function () { dicePreviewOpen = this.open; });
+        $('<summary></summary>').addClass('wf_dice_preview_head').text('Sent to the model').appendTo($pv);
+        $('<pre></pre>').addClass('wf_dice_preview_body').text(injected).appendTo($pv);
+        $pv.appendTo($result);
+    }
+}
+
+/** Compact per-entry status: how many of the model's replies it will still shape. */
+function diceEntryTurnsNote(e) {
+    if (!e.consumed) {
+        const rem = e.turnsRemaining || e.turnsTotal || 1;
+        return rem > 1 ? `armed · ${rem} replies` : 'armed · next reply';
+    }
+    const left = Math.max(0, (e.turnsRemaining || 1) - 1);
+    return left > 0 ? `shaped · ${left} more` : 'shaped · clears next message';
 }
 
 /** Read the Dice tab's duration field, clamped to [1, DICE_MAX_TURNS]. */
@@ -1568,21 +1626,49 @@ function onDiceRoll() {
 
     const turns = readDiceTurnsInput();
     const dice = getDiceData();
-    dice.facts = facts;
-    dice.procedureLabel = proc.label;
+    // ADD a result to the kept list (rolls stack; they don't replace each other).
     // Snapshot the lead-in and tense now (per-procedure overrides payload-level),
-    // so an armed roll keeps its framing even if the tables are edited afterward.
-    dice.framing = proc.framing || diceTables.framing || '';
-    dice.mode = proc.mode || DICE_MODE_RECOUNT;
-    dice.turnsTotal = turns;
-    dice.turnsRemaining = turns;
-    dice.armed = true;
-    dice.consumed = false;
+    // so a kept result keeps its framing even if the tables are edited afterward.
+    dice.entries.push({
+        id: newDiceEntryId(),
+        procedureId: proc.id,
+        label: proc.label,
+        mode: proc.mode || DICE_MODE_RECOUNT,
+        framing: proc.framing || diceTables.framing || '',
+        facts,
+        turnsTotal: turns,
+        turnsRemaining: turns,
+        consumed: false,
+    });
     saveSceneData();
     updateDiceExtensionPrompt();
     renderDicePane();
-    const forReplies = turns === 1 ? 'the next reply' : `the next ${turns} replies`;
-    setSceneStatus(`Rolled "${proc.label}" — armed for ${forReplies}.`);
+    const n = dice.entries.length;
+    setSceneStatus(`Added "${proc.label}" — ${n} result${n === 1 ? '' : 's'} kept.`);
+}
+
+/** Re-roll one kept entry in place so the user can try alternatives until happy. */
+function rerollDiceEntry(id) {
+    if (!getCurrentChatId()) { setSceneStatus('Open a chat before rolling.', true); return; }
+    if (!diceLoaded || !diceTables) { void loadDiceTables(); return; }
+    const dice = getDiceData();
+    const entry = dice.entries.find(e => e.id === id);
+    if (!entry) return;
+    const proc = diceTables.procedures.find(p => p.id === entry.procedureId);
+    if (!proc) { setSceneStatus('That procedure is no longer in this world\'s tables — can\'t re-roll.', true); return; }
+    const facts = resolveDiceProcedure(diceTables, proc);
+    if (!facts.length) { setSceneStatus('Re-roll produced no facts (check its tables).', true); return; }
+    // Replace this entry's facts and restart its countdown — it's a fresh roll.
+    entry.facts = facts;
+    entry.label = proc.label;
+    entry.mode = proc.mode || DICE_MODE_RECOUNT;
+    entry.framing = proc.framing || diceTables.framing || '';
+    entry.turnsRemaining = entry.turnsTotal;
+    entry.consumed = false;
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    renderDicePane();
+    setSceneStatus(`Re-rolled "${proc.label}".`);
 }
 
 /**
@@ -2370,8 +2456,8 @@ const SCENE_WINDOW_HTML = `
                 <span data-i18n="reply(ies)">reply(ies)</span>
             </label>
             <div class="wf_dice_actions">
-                <div id="wf_dice_roll" class="menu_button menu_button_primary"><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
-                <div id="wf_dice_clear" class="menu_button"><i class="fa-solid fa-xmark"></i> <span data-i18n="Clear">Clear</span></div>
+                <div id="wf_dice_roll" class="menu_button menu_button_primary" title="Roll the selected procedure and add the result to the list below. Rolls stack — re-roll (↻) or remove (✕) any of them."><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
+                <div id="wf_dice_clear" class="menu_button" title="Remove all kept results"><i class="fa-solid fa-xmark"></i> <span data-i18n="Clear">Clear</span></div>
             </div>
             <div id="wf_dice_result" class="wf_dice_result"></div>
         </div>
@@ -2516,16 +2602,31 @@ const SCENE_CSS = `
 .wf_dice_actions .menu_button { flex: 1 1 0; justify-content: center; }
 .wf_dice_result { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .wf_dice_result:empty { display: none; }
-.wf_dice_armed_note { font-size: 0.8em; opacity: 0.85; font-style: italic; }
-.wf_dice_armed_note.wf_dice_spent { color: var(--SmartThemeQuoteColor, #6bb1ff); }
-.wf_dice_fact {
+/* Each kept roll is a stacked card: header (label · tense · countdown · buttons)
+   over its facts. Rolls accumulate here instead of replacing one another. */
+.wf_dice_entry {
     border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
     padding: 7px 9px; background: rgba(255, 255, 255, 0.03);
-    display: flex; flex-direction: column; gap: 2px;
+    display: flex; flex-direction: column; gap: 4px;
 }
+.wf_dice_entry.wf_dice_spent { opacity: 0.7; }
+.wf_dice_entry_head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf_dice_entry_label { font-weight: 600; font-size: 0.9em; }
+.wf_dice_entry_turns { font-size: 0.7em; opacity: 0.6; }
+.wf_dice_entry_btns { margin-left: auto; display: flex; gap: 4px; }
+.wf_dice_entry_btn { padding: 2px 7px; font-size: 0.82em; }
+.wf_dice_fact { display: flex; flex-direction: column; gap: 2px; }
 .wf_dice_fact_label { font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; }
 .wf_dice_fact_value { font-size: 0.95em; }
 .wf_dice_fact_detail { font-size: 0.72em; opacity: 0.5; margin-left: auto; margin-top: -14px; }
+/* Preview of the exact text the kept rolls inject into the prompt. */
+.wf_dice_preview { border: 1px dashed var(--SmartThemeBorderColor, #444); border-radius: 8px; padding: 6px 9px; }
+.wf_dice_preview_head { cursor: pointer; font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+.wf_dice_preview_body {
+    margin: 6px 0 0; white-space: pre-wrap; word-break: break-word;
+    font-family: var(--monoFontFamily, monospace); font-size: 0.75em; line-height: 1.4;
+    max-height: 240px; overflow-y: auto; opacity: 0.9;
+}
 .wf_dice_disabled { opacity: 0.4; pointer-events: none; }
 /* ST's mobile breakpoint (see mobile-styles.css). Declarations need !important to
    beat the base rule above. Keep the panel docked to the right edge with a sliver
@@ -3263,7 +3364,7 @@ function initSceneTrackerUI() {
         $('#wf_dice_reload').on('click', () => { diceLoaded = false; loadDiceTables(); });
         $('#wf_dice_roll').on('click', onDiceRoll);
         $('#wf_dice_clear').on('click', () => {
-            disarmDice(true);
+            clearDiceEntries();
             setSceneStatus('Dice oracle cleared.');
         });
 

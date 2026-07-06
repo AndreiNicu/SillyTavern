@@ -1070,6 +1070,392 @@ async function maybeSeedCalendarFromWorld() {
     }
 }
 
+// ------------------------------- dice oracle --------------------------------
+// Manual pre-narration randomizer (Scene Tracker "Dice" tab). The user rolls
+// against world-authored tables BEFORE the model writes a recounted story or a
+// temporary character, and the resolved facts are injected as authoritative
+// context — the dice fix WHAT happened so the model doesn't have to invent it.
+// Tables come from a world-level [[DICE_TABLES]] lorebook entry (same
+// enabled-but-inert carrier convention as [[WORLD_CALENDAR]]); without one the
+// built-in demo tables below are offered. Payload schema, step grammar, and
+// the one-exchange lifecycle are specified in contracts/DICE_ORACLE.md.
+const DICE_TABLES_MARKER = '[[DICE_TABLES]]';
+const DICE_PROMPT_KEY = 'world_forge_dice';
+const DICE_META_KEY = 'world_forge_dice';
+
+// Demo fallback so the feature is testable in any world. A world
+// [[DICE_TABLES]] entry with at least one valid procedure fully replaces this.
+const BUILTIN_DICE_TABLES = {
+    schema: 1,
+    pools: {
+        personality: ['reckless', 'shy and easily flustered', 'boastful', 'gentle', 'hot-tempered', 'deadpan', 'clumsy', 'overconfident'],
+        body_type: ['short and wiry', 'tall and lanky', 'broad and heavy-set', 'soft and round', 'compact and athletic', 'gangly, all elbows'],
+    },
+    procedures: [
+        {
+            id: 'recall_story',
+            label: 'Past story (recall)',
+            steps: [
+                {
+                    id: 'valence', label: 'How it turned out', roll: '1d20',
+                    outcomes: { '1-7': 'bad', '8-14': 'mixed', '15-20': 'great' },
+                    text: { bad: 'it went wrong / ended in embarrassment', mixed: 'a ridiculous mess, but a fond one', great: 'it turned out genuinely great' },
+                },
+                {
+                    id: 'injured', label: 'Anyone hurt', roll: '1d6',
+                    outcomes: { '1-2': 'yes', '3-6': 'no' },
+                    when: { valence: ['bad', 'mixed'] },
+                },
+                {
+                    id: 'severity', label: 'How bad', roll: '1d10',
+                    outcomes: { '1-5': 'minor', '6-8': 'moderate', '9-10': 'serious' },
+                    text: { minor: 'minor — walked it off', moderate: 'moderate — needed patching up', serious: 'serious — left a lasting mark' },
+                    when: { injured: 'yes' },
+                },
+                {
+                    id: 'goal', label: 'Did they pull it off', roll: '1d20',
+                    outcomes: { '1-10': 'no', '11-20': 'yes' },
+                },
+            ],
+        },
+        {
+            id: 'temp_npc',
+            label: 'Temporary NPC',
+            steps: [
+                { id: 'personality', label: 'Personality', pick: 'personality' },
+                { id: 'body', label: 'Build', pick: 'body_type' },
+            ],
+        },
+    ],
+};
+
+/** Roll an NdM(+/-K) formula (or bare number). Returns null when unparseable. */
+function rollDiceFormula(formula) {
+    const text = String(formula ?? '').trim();
+    const m = /^(\d+)\s*d\s*(\d+)\s*([+-]\s*\d+)?$/i.exec(text);
+    if (!m) {
+        const n = Number(text);
+        return Number.isFinite(n) ? Math.round(n) : null;
+    }
+    const count = Number(m[1]);
+    const sides = Number(m[2]);
+    if (count < 1 || count > 100 || sides < 1) return null;
+    let total = m[3] ? Number(m[3].replace(/\s+/g, '')) : 0;
+    for (let i = 0; i < count; i++) {
+        total += 1 + Math.floor(Math.random() * sides);
+    }
+    return total;
+}
+
+/** Map a roll total to its outcome key via "a-b" / "n" range keys, or null. */
+function matchDiceOutcome(outcomes, total) {
+    for (const [range, key] of Object.entries(outcomes || {})) {
+        const m = /^(\d+)\s*-\s*(\d+)$/.exec(String(range).trim());
+        if (m) {
+            if (total >= Number(m[1]) && total <= Number(m[2])) return String(key);
+        } else if (Number(String(range).trim()) === total) {
+            return String(key);
+        }
+    }
+    return null;
+}
+
+/** Is one step's `when` gate satisfied by the outcome keys resolved so far? */
+function diceWhenSatisfied(when, resolvedKeys) {
+    for (const [stepId, accepted] of Object.entries(when || {})) {
+        const got = resolvedKeys[stepId];
+        const list = Array.isArray(accepted) ? accepted : [accepted];
+        if (got === undefined || !list.map(String).includes(got)) return false;
+    }
+    return true;
+}
+
+/** A step is a pick (pool name or inline array) XOR a roll with outcomes. */
+function isValidDiceStep(step) {
+    if (!step || typeof step !== 'object' || typeof step.id !== 'string' || !step.id) return false;
+    const isPick = typeof step.pick === 'string' || Array.isArray(step.pick);
+    const isRoll = step.roll !== undefined && step.outcomes && typeof step.outcomes === 'object';
+    return isPick !== isRoll ? (isPick || isRoll) : false;
+}
+
+/**
+ * Validate/normalise a [[DICE_TABLES]] payload (contracts/DICE_ORACLE.md §3).
+ * Tolerant per the contract: bad pools/steps/procedures are dropped one by one;
+ * returns null only when nothing usable remains (⇒ caller falls back).
+ * @param {Record<string, any>} payload
+ * @returns {{pools: Record<string, string[]>, procedures: any[]}|null}
+ */
+function normalizeDiceTables(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const pools = {};
+    if (payload.pools && typeof payload.pools === 'object') {
+        for (const [name, arr] of Object.entries(payload.pools)) {
+            if (!Array.isArray(arr)) continue;
+            const values = arr.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim());
+            if (values.length) pools[name] = values;
+        }
+    }
+    const procedures = [];
+    for (const proc of Array.isArray(payload.procedures) ? payload.procedures : []) {
+        if (!proc || typeof proc !== 'object' || typeof proc.id !== 'string' || !proc.id) continue;
+        const steps = (Array.isArray(proc.steps) ? proc.steps : []).filter(isValidDiceStep);
+        if (!steps.length) {
+            warn(`dice: procedure '${proc.id}' has no valid steps, dropped`);
+            continue;
+        }
+        procedures.push({
+            id: proc.id,
+            label: typeof proc.label === 'string' && proc.label.trim() ? proc.label.trim() : proc.id,
+            steps,
+        });
+    }
+    return procedures.length ? { pools, procedures } : null;
+}
+
+/** Read the world's [[DICE_TABLES]] entry; null when absent/unusable. */
+async function readWorldDiceTables() {
+    let entries;
+    try {
+        entries = await getSortedEntries();
+    } catch (e) {
+        warn('dice: could not read world info', e);
+        return null;
+    }
+    const entry = (Array.isArray(entries) ? entries : [])
+        .find(e => e && !e.disable && String(e.comment || '').includes(DICE_TABLES_MARKER));
+    if (!entry) return null;
+    const payload = extractJsonObject(String(entry.content || ''));
+    if (!payload) {
+        log('dice: [[DICE_TABLES]] entry found but payload was unparseable');
+        return null;
+    }
+    return normalizeDiceTables(payload);
+}
+
+/**
+ * Walk one procedure's steps in order, rolling/picking each one. Steps whose
+ * `when` gate is unmet (or whose pool/range is broken) resolve nothing.
+ * @returns {{id: string, label: string, value: string, detail: string}[]}
+ */
+function resolveDiceProcedure(tables, proc) {
+    const facts = [];
+    const resolvedKeys = {};
+    for (const step of proc.steps) {
+        if (step.when && !diceWhenSatisfied(step.when, resolvedKeys)) continue;
+        const label = typeof step.label === 'string' && step.label.trim() ? step.label.trim() : step.id;
+        if (step.pick !== undefined) {
+            const pool = Array.isArray(step.pick) ? step.pick.filter(v => typeof v === 'string' && v.trim()) : tables.pools[step.pick];
+            if (!Array.isArray(pool) || !pool.length) {
+                warn(`dice: step '${step.id}' references empty/unknown pool, skipped`);
+                continue;
+            }
+            const value = String(pool[Math.floor(Math.random() * pool.length)]).trim();
+            resolvedKeys[step.id] = value; // `when` matches the picked string itself
+            facts.push({ id: step.id, label, value, detail: `1 of ${pool.length}` });
+        } else {
+            const total = rollDiceFormula(step.roll);
+            if (total === null) {
+                warn(`dice: step '${step.id}' has an unparseable roll '${step.roll}', skipped`);
+                continue;
+            }
+            const key = matchDiceOutcome(step.outcomes, total);
+            if (key === null) {
+                warn(`dice: step '${step.id}' rolled ${total}, matched no outcome range, skipped`);
+                continue;
+            }
+            resolvedKeys[step.id] = key;
+            const value = (step.text && typeof step.text[key] === 'string' && step.text[key].trim()) ? step.text[key].trim() : key;
+            facts.push({ id: step.id, label, value, detail: `${String(step.roll).trim()} → ${total}` });
+        }
+    }
+    return facts;
+}
+
+/**
+ * Per-chat oracle state, in chat_metadata (like the scene record). Lifecycle:
+ * Roll arms it → the next generation consumes it (swipes of that reply still
+ * see the same facts — a swipe retells, it doesn't re-roll history) → the
+ * user's NEXT message clears it. Facts are ephemeral by design in v1: never
+ * canon, never written to memory (contracts/DICE_ORACLE.md §1).
+ */
+function getDiceData() {
+    let d = chat_metadata[DICE_META_KEY];
+    if (!d || typeof d !== 'object') {
+        d = {};
+        chat_metadata[DICE_META_KEY] = d;
+    }
+    if (typeof d.armed !== 'boolean') d.armed = false;
+    if (typeof d.consumed !== 'boolean') d.consumed = false;
+    if (typeof d.procedureLabel !== 'string') d.procedureLabel = '';
+    if (!Array.isArray(d.facts)) d.facts = [];
+    d.facts = d.facts.filter(f => f && typeof f === 'object' && typeof f.value === 'string');
+    return d;
+}
+
+function buildDiceBlock(dice) {
+    if (!dice.armed || !dice.facts.length) return '';
+    const lines = dice.facts.map(f => `- ${f.label || f.id}: ${f.value}${f.detail ? ` (${f.detail})` : ''}`);
+    return [
+        '<dice_oracle>',
+        'Dice were rolled to fix the facts of the story, flashback, or minor character about to be narrated.',
+        'These results are AUTHORITATIVE: weave every fact in naturally and do not contradict any of them.',
+        'The dice decide WHAT is true; you decide how it plays out — invent the texture, details, and voice around these fixed points.',
+        `Rolled — ${dice.procedureLabel || 'oracle'}:`,
+        ...lines,
+        '</dice_oracle>',
+    ].join('\n');
+}
+
+/** Set/clear the one-shot oracle injection (same engine as the scene block). */
+function updateDiceExtensionPrompt() {
+    const ctx = getContext();
+    const clear = () => ctx.setExtensionPrompt(DICE_PROMPT_KEY, '', extension_prompt_types.NONE, 0);
+    if (!getCurrentChatId()) return clear();
+    const block = buildDiceBlock(getDiceData());
+    if (!block) return clear();
+    // Fixed placement in v1: system role, in-chat at depth 1 — right above the
+    // user's latest message, where a one-shot directive binds strongest.
+    ctx.setExtensionPrompt(DICE_PROMPT_KEY, substituteParams(block), extension_prompt_types.IN_CHAT, 1, false, extension_prompt_roles.SYSTEM);
+    log('→ dice_oracle set as extension prompt', { facts: getDiceData().facts.length });
+}
+
+function disarmDice(clearFacts = false) {
+    const dice = getDiceData();
+    dice.armed = false;
+    dice.consumed = false;
+    if (clearFacts) {
+        dice.facts = [];
+        dice.procedureLabel = '';
+    }
+    saveSceneData(); // debounced chat_metadata save (shared with the scene record)
+    updateDiceExtensionPrompt();
+    if (sceneOpen) renderDicePane();
+}
+
+/** GENERATION_ENDED: the armed facts have shaped a reply — mark them spent. */
+function onDiceGenerationEnded() {
+    if (!getCurrentChatId()) return;
+    const dice = getDiceData();
+    if (dice.armed && !dice.consumed) {
+        dice.consumed = true;
+        saveSceneData();
+        if (sceneOpen) renderDicePane();
+    }
+}
+
+/** MESSAGE_SENT: the exchange the roll was for is over — let go of the facts. */
+function onDiceMessageSent() {
+    if (!getCurrentChatId()) return;
+    const dice = getDiceData();
+    if (dice.armed && dice.consumed) {
+        log('dice: exchange over, disarming oracle');
+        disarmDice();
+    }
+}
+
+// ------------------------- dice oracle: UI ---------------------------------
+// Lazily-loaded tables for the Dice tab: the world's [[DICE_TABLES]] payload
+// when present, otherwise the built-in demo set. Reset on chat change.
+let diceTables = null;
+let diceUsingBuiltin = false;
+let diceLoaded = false;
+let diceLoading = false;
+let diceSelectedProcedureId = '';
+
+async function loadDiceTables() {
+    if (diceLoading) return;
+    diceLoading = true;
+    try {
+        const world = await readWorldDiceTables();
+        if (world) {
+            diceTables = world;
+            diceUsingBuiltin = false;
+        } else {
+            diceTables = normalizeDiceTables(BUILTIN_DICE_TABLES);
+            diceUsingBuiltin = true;
+        }
+        diceLoaded = true;
+        // Keep the current selection if it still exists, else default to first.
+        const ids = diceTables.procedures.map(p => p.id);
+        if (!ids.includes(diceSelectedProcedureId)) diceSelectedProcedureId = ids[0] || '';
+    } catch (e) {
+        warn('dice: table load failed', e);
+        diceTables = normalizeDiceTables(BUILTIN_DICE_TABLES);
+        diceUsingBuiltin = true;
+        diceLoaded = true;
+    } finally {
+        diceLoading = false;
+        if (sceneOpen) renderDicePane();
+    }
+}
+
+function renderDicePane() {
+    const $source = $('#wf_dice_source');
+    const $select = $('#wf_dice_procedure');
+    const $result = $('#wf_dice_result');
+    if (!$select.length) return;
+
+    if (!diceLoaded) {
+        $source.text('Loading tables…').removeClass('wf_dice_builtin');
+        $select.empty();
+        $result.empty();
+        if (!diceLoading) void loadDiceTables();
+        return;
+    }
+
+    const procedures = (diceTables && diceTables.procedures) || [];
+    $source
+        .text(diceUsingBuiltin
+            ? 'Using built-in demo tables (no [[DICE_TABLES]] in this world).'
+            : `Using this world's [[DICE_TABLES]] — ${procedures.length} procedure${procedures.length === 1 ? '' : 's'}.`)
+        .toggleClass('wf_dice_builtin', diceUsingBuiltin);
+
+    $select.empty();
+    for (const proc of procedures) {
+        $('<option></option>').val(proc.id).text(proc.label).appendTo($select);
+    }
+    if (!procedures.some(p => p.id === diceSelectedProcedureId)) diceSelectedProcedureId = procedures[0]?.id || '';
+    $select.val(diceSelectedProcedureId);
+    $('#wf_dice_roll').toggleClass('wf_dice_disabled', procedures.length === 0);
+
+    // Render the currently-armed facts (survives tab/chat re-open until cleared).
+    const dice = getDiceData();
+    $result.empty();
+    if (dice.armed && dice.facts.length) {
+        const note = dice.consumed
+            ? 'Rolled facts shaped the last reply — swipes reuse them; your next message clears them.'
+            : 'Armed for the next reply. Roll again to replace, or Clear to discard.';
+        $('<div></div>').addClass('wf_dice_armed_note').toggleClass('wf_dice_spent', dice.consumed).text(note).appendTo($result);
+        for (const f of dice.facts) {
+            const $card = $('<div></div>').addClass('wf_dice_fact');
+            $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($card);
+            $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($card);
+            if (f.detail) $('<div></div>').addClass('wf_dice_fact_detail').text(f.detail).appendTo($card);
+            $card.appendTo($result);
+        }
+    }
+}
+
+function onDiceRoll() {
+    if (!getCurrentChatId()) { setSceneStatus('Open a chat before rolling.', true); return; }
+    if (!diceLoaded || !diceTables) { void loadDiceTables(); return; }
+    const proc = diceTables.procedures.find(p => p.id === diceSelectedProcedureId);
+    if (!proc) { setSceneStatus('No procedure selected.', true); return; }
+
+    const facts = resolveDiceProcedure(diceTables, proc);
+    if (!facts.length) { setSceneStatus('That procedure produced no facts (check its tables).', true); return; }
+
+    const dice = getDiceData();
+    dice.facts = facts;
+    dice.procedureLabel = proc.label;
+    dice.armed = true;
+    dice.consumed = false;
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    renderDicePane();
+    setSceneStatus(`Rolled "${proc.label}" — armed for the next reply.`);
+}
+
 /**
  * Run the secondary LLM over recent messages and merge the result into the
  * current scene record. Location is replaced; present cast is merged by name so
@@ -1658,6 +2044,7 @@ const SCENE_WINDOW_HTML = `
         <div class="wf_scene_tab wf_scene_tab_active" data-tab="location" data-i18n="Location">Location</div>
         <div class="wf_scene_tab" data-tab="present" data-i18n="In the Scene">In the Scene</div>
         <div class="wf_scene_tab" data-tab="roster" data-i18n="NPC Roster">NPC Roster</div>
+        <div class="wf_scene_tab" data-tab="dice" data-i18n="Dice">Dice</div>
     </div>
     <div id="wf_scene_status" class="wf_scene_status"></div>
     <div class="wf_scene_body">
@@ -1841,6 +2228,19 @@ const SCENE_WINDOW_HTML = `
             <div id="wf_scene_roster_count" class="wf_scene_roster_count"></div>
             <div id="wf_scene_roster_list" class="wf_scene_list"></div>
         </div>
+        <div id="wf_scene_pane_dice" class="wf_scene_pane">
+            <small class="notes" data-i18n="Roll world-authored tables BEFORE the model narrates a recalled story or a temporary character. The rolled facts are injected as authoritative context for the next reply only — the dice fix WHAT happened, the model invents the texture.">Roll world-authored tables BEFORE the model narrates a recalled story or a temporary character. The rolled facts are injected as authoritative context for the next reply only — the dice fix WHAT happened, the model invents the texture.</small>
+            <div id="wf_dice_source" class="wf_dice_source"></div>
+            <div class="wf_dice_pick_row">
+                <select id="wf_dice_procedure" class="text_pole"></select>
+                <div id="wf_dice_reload" class="menu_button menu_button_icon" title="Reload tables from lorebooks"><i class="fa-solid fa-rotate"></i></div>
+            </div>
+            <div class="wf_dice_actions">
+                <div id="wf_dice_roll" class="menu_button menu_button_primary"><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
+                <div id="wf_dice_clear" class="menu_button"><i class="fa-solid fa-xmark"></i> <span data-i18n="Clear">Clear</span></div>
+            </div>
+            <div id="wf_dice_result" class="wf_dice_result"></div>
+        </div>
     </div>
 </div>`;
 
@@ -1966,6 +2366,25 @@ const SCENE_CSS = `
 .wf_npc_pic_btn { cursor: pointer; opacity: 0.5; font-size: 0.82em; padding: 2px; }
 .wf_npc_pic_btn:hover { opacity: 1; }
 .wf_scene_person .wf_npc_portrait_wrap { margin-top: 8px; }
+.wf_dice_source { font-size: 0.78em; opacity: 0.7; }
+.wf_dice_source.wf_dice_builtin { color: var(--SmartThemeQuoteColor, #6bb1ff); opacity: 0.9; }
+.wf_dice_pick_row { display: flex; gap: 6px; align-items: center; }
+.wf_dice_pick_row .text_pole { flex: 1 1 auto; min-width: 0; }
+.wf_dice_actions { display: flex; gap: 6px; }
+.wf_dice_actions .menu_button { flex: 1 1 0; justify-content: center; }
+.wf_dice_result { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.wf_dice_result:empty { display: none; }
+.wf_dice_armed_note { font-size: 0.8em; opacity: 0.85; font-style: italic; }
+.wf_dice_armed_note.wf_dice_spent { color: var(--SmartThemeQuoteColor, #6bb1ff); }
+.wf_dice_fact {
+    border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 8px;
+    padding: 7px 9px; background: rgba(255, 255, 255, 0.03);
+    display: flex; flex-direction: column; gap: 2px;
+}
+.wf_dice_fact_label { font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; }
+.wf_dice_fact_value { font-size: 0.95em; }
+.wf_dice_fact_detail { font-size: 0.72em; opacity: 0.5; margin-left: auto; margin-top: -14px; }
+.wf_dice_disabled { opacity: 0.4; pointer-events: none; }
 /* ST's mobile breakpoint (see mobile-styles.css). Declarations need !important to
    beat the base rule above. Keep the panel docked to the right edge with a sliver
    of chat visible, and pad for the home indicator on notched phones. */
@@ -2471,6 +2890,9 @@ function renderScene() {
     renderSceneDirector();
     renderPresent();
     renderRoster();
+    // Only refresh the Dice pane if its tables are already loaded — opening the
+    // window on another tab shouldn't force a world-info read.
+    if (diceLoaded) renderDicePane();
 }
 
 function switchSceneTab(tab) {
@@ -2480,6 +2902,11 @@ function switchSceneTab(tab) {
     $(`#wf_scene_pane_${tab}`).addClass('wf_scene_pane_active');
     // Lazily read the lorebooks the first time the roster tab is opened.
     if (tab === 'roster' && !rosterLoaded && !rosterLoading) loadRoster();
+    // Lazily read the world's dice tables the first time the Dice tab is opened.
+    if (tab === 'dice') {
+        if (!diceLoaded && !diceLoading) void loadDiceTables();
+        else renderDicePane();
+    }
 }
 
 function openSceneWindow() {
@@ -2689,14 +3116,28 @@ function initSceneTrackerUI() {
         $('#wf_scene_roster_search').on('input', renderRoster);
         $('#wf_scene_roster_names_only').on('change', renderRoster);
 
+        // Dice oracle tab.
+        $('#wf_dice_procedure').on('change', function () { diceSelectedProcedureId = String($(this).val() || ''); });
+        $('#wf_dice_reload').on('click', () => { diceLoaded = false; loadDiceTables(); });
+        $('#wf_dice_roll').on('click', onDiceRoll);
+        $('#wf_dice_clear').on('click', () => {
+            disarmDice(true);
+            setSceneStatus('Dice oracle cleared.');
+        });
+
         // Re-render when the chat changes so the panel reflects the new chat's
         // record, and invalidate the roster so it re-reads the new lorebook set.
         eventSource.on(event_types.CHAT_CHANGED, () => {
             rosterLoaded = false;
             rosterEntries = [];
+            // A new chat may bind a different world (different [[DICE_TABLES]]);
+            // invalidate so the Dice tab re-reads on next open.
+            diceLoaded = false;
+            diceTables = null;
             if (sceneOpen) {
                 renderScene();
                 if ($('.wf_scene_tab[data-tab="roster"]').hasClass('wf_scene_tab_active')) loadRoster();
+                if ($('.wf_scene_tab[data-tab="dice"]').hasClass('wf_scene_tab_active')) loadDiceTables();
             }
         });
 
@@ -2732,6 +3173,14 @@ export function init() {
     // recompute before each generation, and clear/refresh when the chat changes.
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateSceneExtensionPrompt);
     eventSource.on(event_types.CHAT_CHANGED, updateSceneExtensionPrompt);
+    // Dice oracle (manual, one-exchange lifecycle — see contracts/DICE_ORACLE.md):
+    // keep the injection current before each gen, mark facts spent once a reply
+    // lands, and release them when the user sends the next message. Refresh on
+    // chat change so a stale armed roll from another chat never leaks in.
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, updateDiceExtensionPrompt);
+    eventSource.on(event_types.GENERATION_ENDED, onDiceGenerationEnded);
+    eventSource.on(event_types.MESSAGE_SENT, onDiceMessageSent);
+    eventSource.on(event_types.CHAT_CHANGED, updateDiceExtensionPrompt);
     // Seed the Scene Tracker's calendar from the world's [[WORLD_CALENDAR]] block
     // on a fresh chat (no-op when absent or when the user has set dates already).
     eventSource.on(event_types.CHAT_CHANGED, maybeSeedCalendarFromWorld);

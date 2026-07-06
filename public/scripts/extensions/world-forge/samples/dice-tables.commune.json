@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "_comment": "Sample [[DICE_TABLES]] payload for the dice oracle (contracts/DICE_ORACLE.md). Paste the JSON below (without this _comment) into the CONTENT of one World-level World Info entry whose COMMENT/title contains the literal token [[DICE_TABLES]]. Keep the entry ENABLED (disable:false) but INERT (no keys, not constant) so it never injects itself — the Scene Tracker's Dice tab reads it out of the raw world data. Tuned for a slice-of-life commune where a free-spirited NPC recounts past flings and conjures temporary men on demand.",
+
+  "pools": {
+    "man_build": [
+      "a broad, heavy-set giant who could pin her to a wall one-handed",
+      "wiry and restless, never still for a second",
+      "soft and round, all warmth and no edges",
+      "lean and wickedly tall, all elbows and knees",
+      "compact and athletic, deceptively strong",
+      "shaggy and bear-like, more beard than face"
+    ],
+    "man_vibe": [
+      "painfully earnest and a little clueless",
+      "smooth-talking and far too pleased with himself",
+      "shy until he wasn't",
+      "a chaos gremlin who treated every rule as a dare",
+      "gentle and unbothered, went along with anything",
+      "intense, treated a picnic like a military operation"
+    ],
+    "setting": [
+      "a half-painted room",
+      "the back of a rusted-out van",
+      "a rooftop at 3 a.m.",
+      "a communal kitchen mid-dinner-prep",
+      "a lake nobody was supposed to swim in",
+      "a barn during a thunderstorm"
+    ],
+    "antic": [
+      "an ambitious DIY project that got wildly out of hand",
+      "a skinny-dip that an audience stumbled onto",
+      "a food fight that turned into something else",
+      "a furniture-assembly disaster",
+      "an attempt to be quiet that failed spectacularly",
+      "a prank that backfired on both of them"
+    ]
+  },
+
+  "procedures": [
+    {
+      "id": "recall_fling",
+      "label": "Recalled fling (full story)",
+      "steps": [
+        { "id": "build", "label": "The man's build", "pick": "man_build" },
+        { "id": "vibe", "label": "His personality", "pick": "man_vibe" },
+        { "id": "where", "label": "Where it happened", "pick": "setting" },
+        { "id": "what", "label": "What they got up to", "pick": "antic" },
+        {
+          "id": "valence", "label": "How it turned out", "roll": "1d20",
+          "outcomes": { "1-6": "disaster", "7-13": "messy", "14-20": "great" },
+          "text": {
+            "disaster": "it went completely, mortifyingly wrong",
+            "messy": "a ridiculous mess — but a fond, funny memory",
+            "great": "it turned out genuinely wonderful"
+          }
+        },
+        {
+          "id": "mishap", "label": "Did something go awry", "roll": "1d6",
+          "outcomes": { "1-3": "yes", "4-6": "no" },
+          "when": { "valence": ["disaster", "messy"] }
+        },
+        {
+          "id": "aftermath", "label": "The lasting evidence", "roll": "1d10",
+          "outcomes": { "1-5": "trivial", "6-8": "notable", "9-10": "legendary" },
+          "text": {
+            "trivial": "a small mess, cleaned up and forgotten",
+            "notable": "something that took real effort to live down",
+            "legendary": "a trace still talked about / visible to this day"
+          },
+          "when": { "mishap": "yes" }
+        },
+        {
+          "id": "reunion", "label": "Whatever happened to him", "roll": "1d20",
+          "outcomes": { "1-8": "vanished", "9-15": "still_around", "16-20": "showed_up_here" },
+          "text": {
+            "vanished": "he drifted off and she never saw him again",
+            "still_around": "they're still loosely in touch",
+            "showed_up_here": "he actually turned up at the commune later"
+          }
+        }
+      ]
+    },
+    {
+      "id": "temp_man",
+      "label": "Temporary man (quick sketch)",
+      "steps": [
+        { "id": "build", "label": "Build", "pick": "man_build" },
+        { "id": "vibe", "label": "Personality", "pick": "man_vibe" }
+      ]
+    }
+  ]
+}

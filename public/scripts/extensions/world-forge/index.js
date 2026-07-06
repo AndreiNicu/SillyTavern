@@ -1206,10 +1206,15 @@ function normalizeDiceTables(payload) {
         procedures.push({
             id: proc.id,
             label: typeof proc.label === 'string' && proc.label.trim() ? proc.label.trim() : proc.id,
+            // Optional per-procedure lead-in for the injected block; falls back
+            // to the payload-level `framing`, then the built-in default.
+            framing: typeof proc.framing === 'string' ? proc.framing.trim() : '',
             steps,
         });
     }
-    return procedures.length ? { pools, procedures } : null;
+    if (!procedures.length) return null;
+    const framing = typeof payload.framing === 'string' ? payload.framing.trim() : '';
+    return { pools, procedures, framing };
 }
 
 /** Read the world's [[DICE_TABLES]] entry; null when absent/unusable. */
@@ -1287,20 +1292,25 @@ function getDiceData() {
     if (typeof d.armed !== 'boolean') d.armed = false;
     if (typeof d.consumed !== 'boolean') d.consumed = false;
     if (typeof d.procedureLabel !== 'string') d.procedureLabel = '';
+    if (typeof d.framing !== 'string') d.framing = '';
     if (!Array.isArray(d.facts)) d.facts = [];
     d.facts = d.facts.filter(f => f && typeof f === 'object' && typeof f.value === 'string');
     return d;
 }
 
+// Default lead-in when neither the procedure nor the payload supplies a
+// `framing`. Deliberately light: it establishes the facts as true and hands
+// interpretation to the world's own instructions, rather than dictating tone.
+const DEFAULT_DICE_FRAMING = 'Here are the established facts for the memory, encounter, or character being recounted. Treat them as true, and follow this world\'s guidance on how to interpret and narrate them:';
+
 function buildDiceBlock(dice) {
     if (!dice.armed || !dice.facts.length) return '';
-    const lines = dice.facts.map(f => `- ${f.label || f.id}: ${f.value}${f.detail ? ` (${f.detail})` : ''}`);
+    // Model-facing facts only — no dice math (that stays in the UI panel).
+    const lines = dice.facts.map(f => `- ${f.label || f.id}: ${f.value}`);
+    const framing = dice.framing && dice.framing.trim() ? dice.framing.trim() : DEFAULT_DICE_FRAMING;
     return [
         '<dice_oracle>',
-        'Dice were rolled to fix the facts of the story, flashback, or minor character about to be narrated.',
-        'These results are AUTHORITATIVE: weave every fact in naturally and do not contradict any of them.',
-        'The dice decide WHAT is true; you decide how it plays out — invent the texture, details, and voice around these fixed points.',
-        `Rolled — ${dice.procedureLabel || 'oracle'}:`,
+        framing,
         ...lines,
         '</dice_oracle>',
     ].join('\n');
@@ -1448,6 +1458,9 @@ function onDiceRoll() {
     const dice = getDiceData();
     dice.facts = facts;
     dice.procedureLabel = proc.label;
+    // Snapshot the lead-in now (per-procedure overrides payload-level), so an
+    // armed roll keeps its framing even if the tables are edited afterward.
+    dice.framing = proc.framing || diceTables.framing || '';
     dice.armed = true;
     dice.consumed = false;
     saveSceneData();

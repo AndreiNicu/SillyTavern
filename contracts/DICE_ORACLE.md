@@ -72,6 +72,8 @@ Dice tab is a supported authoring loop.
 ```jsonc
 {
   "schema": 1,                          // consumer reads what it knows, ignores the rest
+  "framing": "Here is some information regarding this encounter. Treat it as true and narrate accordingly:",
+                                        // optional lead-in prepended to the injected facts (§3.5)
   "pools": {                            // named arrays of strings for "pick" steps
     "man_type": ["broad and heavy", "wiry and restless", "soft-spoken giant"],
     "antics":   ["a paint job that went sideways", "skinny-dipping at dawn"]
@@ -80,6 +82,7 @@ Dice tab is a supported authoring loop.
     {
       "id": "past_fling",               // stable snake_case id, unique in the file
       "label": "Past fling (temp man)", // human label for the picker; falls back to id
+      "framing": "…",                   // optional; overrides payload-level framing (§3.5)
       "steps": [
         { "id": "man",   "label": "The man",   "pick": "man_type" },
         { "id": "antic", "label": "The antic", "pick": "antics" },
@@ -102,8 +105,13 @@ Dice tab is a supported authoring loop.
 | Path | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `schema` | int | yes | Contract version of this payload (currently `1`). The consumer is forward-compatible: it reads the fields it recognizes and ignores the rest. |
+| `framing` | string | no | Payload-level lead-in for the injected block (§3.5). |
 | `pools` | object | no | Map of pool name → array of strings. Non-string items are dropped; an empty/missing pool makes steps that reference it no-op (§3.2). |
 | `procedures` | array | yes | Ordered list of procedures. A procedure with no valid steps is dropped; a payload with no valid procedures counts as absent (§5). |
+
+A procedure object carries `id` (required, unique snake_case), `label`
+(optional picker label, falls back to `id`), an optional `framing` (§3.5), and
+`steps` (§3.2).
 
 ### 3.2 Steps
 
@@ -145,6 +153,23 @@ grammar matches the `rpg-engine-kit` roller: `NdM` sums N independent 1–M
 rolls; an optional `+K`/`-K` modifier is added once. There is no advantage /
 disadvantage / exploding-dice syntax in schema 1.
 
+### 3.5 `framing` — the injected lead-in
+
+`framing` is a plain-text line (or lines) the consumer prepends to the rolled
+facts inside the injected block, before the `label: value` list. It is how the
+**world author**, not the extension, sets the register: "Here is some
+information regarding this encounter. Treat it as true and narrate
+accordingly:".
+
+- A **procedure**'s `framing` overrides the **payload**-level `framing`.
+- When neither is set, the consumer supplies a light built-in default that
+  establishes the facts as true and defers interpretation to the world's own
+  system-prompt instructions — it does not dictate tone.
+- The intended division of labor: `framing` + the facts say **what is true**;
+  the world's standing instructions say **how to tell it**. Keep `framing`
+  short and let the world prompt carry the interpretation rules (it can key off
+  the `<dice_oracle>` block by name).
+
 ---
 
 ## 4. Consumer behavior (informative)
@@ -158,9 +183,9 @@ not depend on these details, but they explain what the tables drive.
   facts. Tables load lazily when the tab is first opened and re-read when the
   chat changes.
 - **Injection**: while armed, the facts are injected near the end of the chat
-  as a system-role `<dice_oracle>` block framed as authoritative ("the dice
-  fix WHAT happened; invent the texture around them — do not contradict
-  them").
+  as a system-role `<dice_oracle>` block: the `framing` lead-in (§3.5) followed
+  by a clean `- label: value` list of the resolved facts. The dice math (which
+  formula rolled what) stays in the UI panel and is **not** sent to the model.
 - **One-exchange lifecycle**: a roll **arms** the oracle → the next generation
   consumes it (swipes/regenerations of that same reply still see the same
   facts — a swipe means "retell it", not "re-roll history") → sending the
@@ -189,6 +214,8 @@ Absence never errors, matching every other seam in `WORLD_FORGE_SYNC.md`:
 - [ ] Payload is one JSON object with `schema: 1` and ≥ 1 valid procedure.
 - [ ] Every `roll` step's `outcomes` covers the formula's full range.
 - [ ] Outcome keys are short and stable; prose lives in `text`.
+- [ ] (Optional) a `framing` lead-in sets the register; interpretation rules
+      live in the world's system prompt, keyed off the `<dice_oracle>` block.
 - [ ] `when` only references earlier step ids within the same procedure.
 - [ ] Pool names referenced by `pick` exist in `pools` and are non-empty.
 

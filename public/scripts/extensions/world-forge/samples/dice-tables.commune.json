@@ -1,6 +1,8 @@
 {
   "schema": 1,
-  "_comment": "Sample [[DICE_TABLES]] payload for the dice oracle (contracts/DICE_ORACLE.md). Paste the JSON below (without this _comment) into the CONTENT of one World-level World Info entry whose COMMENT/title contains the literal token [[DICE_TABLES]]. Keep the entry ENABLED (disable:false) but INERT (no keys, not constant) so it never injects itself — the Scene Tracker's Dice tab reads it out of the raw world data. Tuned for a slice-of-life commune where a free-spirited NPC recounts past flings and conjures temporary men on demand.",
+  "_comment": "Sample [[DICE_TABLES]] payload for the dice oracle (contracts/DICE_ORACLE.md). Paste the JSON below (without this _comment) into the CONTENT of one World-level World Info entry whose COMMENT/title contains the literal token [[DICE_TABLES]]. Keep the entry ENABLED (disable:false) but INERT (no keys, not constant) so it never injects itself — the Scene Tracker's Dice tab reads it out of the raw world data. Tuned for a slice-of-life commune where a free-spirited NPC recounts past flings and conjures temporary men on demand. `framing` is the lead-in prepended to the rolled facts; put HOW to narrate them in your world's system prompt (it can refer to the <dice_oracle> block by name).",
+
+  "framing": "Here is some information regarding this recounted encounter. Treat every detail as an established fact and narrate the memory in-character around them:",
 
   "pools": {
     "man_build": [

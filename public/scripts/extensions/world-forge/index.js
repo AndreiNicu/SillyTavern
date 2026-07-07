@@ -85,6 +85,11 @@ function getSettings() {
     // they no-op silently when that profile isn't configured.
     if (typeof s.autoScanInterval !== 'number' || !Number.isFinite(s.autoScanInterval)) s.autoScanInterval = 3;
     s.autoScanInterval = Math.max(0, Math.min(50, Math.round(s.autoScanInterval)));
+    // Dice oracle injection depth (in-chat, messages from the bottom): lower =
+    // closer to the latest message (binds harder), higher = further back
+    // (gentler). Default 1 preserves the original behaviour.
+    if (typeof s.diceInjectDepth !== 'number' || !Number.isFinite(s.diceInjectDepth)) s.diceInjectDepth = 1;
+    s.diceInjectDepth = Math.max(0, Math.min(20, Math.round(s.diceInjectDepth)));
     return s;
 }
 
@@ -1538,10 +1543,12 @@ function updateDiceExtensionPrompt() {
     if (!getCurrentChatId()) return clear();
     const text = diceInjectedText();
     if (!text) return clear();
-    // System role, in-chat at depth 1 — right above the user's latest message,
-    // where a directive binds strongest.
-    ctx.setExtensionPrompt(DICE_PROMPT_KEY, text, extension_prompt_types.IN_CHAT, 1, false, extension_prompt_roles.SYSTEM);
-    log('→ dice_oracle set as extension prompt', { entries: getDiceData().entries.length });
+    // System role, in-chat at a user-set depth (messages from the bottom). Lower
+    // binds harder (depth 1 sits right above the latest message); higher is
+    // gentler. Configurable via the Dice tab; default 1 (§ getSettings).
+    const depth = getSettings().diceInjectDepth;
+    ctx.setExtensionPrompt(DICE_PROMPT_KEY, text, extension_prompt_types.IN_CHAT, depth, false, extension_prompt_roles.SYSTEM);
+    log('→ dice_oracle set as extension prompt', { entries: getDiceData().entries.length, depth });
 }
 
 /** Remove one kept entry by id; with no id, clear them all. */
@@ -1661,7 +1668,7 @@ async function loadDiceTables() {
         diceLoaded = true;
     } finally {
         diceLoading = false;
-        if (sceneOpen) { renderDicePane(); seedDiceTurnsInput(); }
+        if (sceneOpen) { renderDicePane(); seedDiceTurnsInput(); seedDiceDepthInput(); }
     }
 }
 
@@ -1837,6 +1844,12 @@ function diceEntryTurnsNote(e) {
 /** Read the Dice tab's duration field, clamped to [1, DICE_MAX_TURNS]. */
 function readDiceTurnsInput() {
     return normDiceTurns($('#wf_dice_turns').val()) ?? DICE_DEFAULT_TURNS;
+}
+
+/** Reflect the saved injection depth into the Dice tab's depth field. */
+function seedDiceDepthInput() {
+    const $d = $('#wf_dice_depth');
+    if ($d.length) $d.val(getSettings().diceInjectDepth);
 }
 
 /** Seed the duration field from the selected procedure's default (§3.6). */
@@ -2755,6 +2768,11 @@ const SCENE_WINDOW_HTML = `
                 <input id="wf_dice_turns" type="number" class="text_pole wf_dice_turns_input" min="1" max="20" step="1" value="1" />
                 <span data-i18n="reply(ies)">reply(ies)</span>
             </label>
+            <label class="wf_dice_turns_row" title="How deep in the chat the rolled facts are injected, counted in messages from the bottom. Lower binds harder (1 = right above the latest message); higher is gentler. Applies to armed and future rolls. Default 1.">
+                <span data-i18n="Inject at depth">Inject at depth</span>
+                <input id="wf_dice_depth" type="number" class="text_pole wf_dice_turns_input" min="0" max="20" step="1" value="1" />
+                <span data-i18n="messages from the end">msgs from the end</span>
+            </label>
             <div id="wf_dice_cast_row" class="wf_dice_cast_row" style="display:none;">
                 <div class="wf_dice_cast_label" title="Pin existing characters into the next roll. The dice fix the situation; each pinned character is played from their own profile, not the rolled facts."><span data-i18n="Also here (existing cast)">Also here (existing cast)</span></div>
                 <div id="wf_dice_cast" class="wf_dice_cast"></div>
@@ -3474,7 +3492,7 @@ function switchSceneTab(tab) {
     // Lazily read the world's dice tables the first time the Dice tab is opened.
     if (tab === 'dice') {
         if (!diceLoaded && !diceLoading) void loadDiceTables();
-        else renderDicePane();
+        else { renderDicePane(); seedDiceDepthInput(); }
     }
 }
 
@@ -3688,6 +3706,13 @@ function initSceneTrackerUI() {
         // Dice oracle tab.
         $('#wf_dice_procedure').on('change', function () { diceSelectedProcedureId = String($(this).val() || ''); seedDiceTurnsInput(); });
         $('#wf_dice_reload').on('click', () => { diceLoaded = false; loadDiceTables(); });
+        $('#wf_dice_depth').on('change', function () {
+            const s = getSettings();
+            s.diceInjectDepth = Math.max(0, Math.min(20, Math.round(Number($(this).val()) || 0)));
+            getContext().saveSettingsDebounced();
+            seedDiceDepthInput();            // reflect clamping back into the field
+            updateDiceExtensionPrompt();     // move any armed injection to the new depth now
+        });
         $('#wf_dice_roll').on('click', onDiceRoll);
         $('#wf_dice_clear').on('click', () => {
             clearDiceEntries();

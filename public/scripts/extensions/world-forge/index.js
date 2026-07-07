@@ -1572,6 +1572,52 @@ function detachDiceCast(id, name) {
     renderDicePane();
 }
 
+/**
+ * The valid alternatives for one rolled fact, resolved from the world's live
+ * tables so the user can swap a single value without re-rolling the rest:
+ * a pick step's pool values, or a roll step's distinct outcome phrases. Returns
+ * null when there's no real choice or the source step is no longer in the loaded
+ * tables (edited/removed) — then the value stays static, non-editable.
+ */
+function diceFactOptions(part, fact) {
+    if (!diceTables || !part) return null;
+    const proc = diceTables.procedures.find(p => p.id === part.procedureId);
+    const step = proc && (proc.steps || []).find(s => s.id === fact.id);
+    if (!step) return null;
+    let opts = [];
+    if (step.pick !== undefined) {
+        const pool = Array.isArray(step.pick) ? step.pick : diceTables.pools[step.pick];
+        opts = Array.isArray(pool) ? pool.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim()) : [];
+    } else if (step.outcomes && typeof step.outcomes === 'object') {
+        // Distinct display values across the outcome keys (text[key], else the key).
+        for (const key of Object.values(step.outcomes)) {
+            const v = (step.text && typeof step.text[key] === 'string' && step.text[key].trim())
+                ? step.text[key].trim() : String(key);
+            if (!opts.includes(v)) opts.push(v);
+        }
+    }
+    opts = [...new Set(opts)];
+    return opts.length > 1 ? opts : null;
+}
+
+/**
+ * Manually override one fact's value (targeted by entry id + part index + step
+ * id). Changes only that fact — it does NOT re-evaluate `when` gates, so it's a
+ * surface override of the surfaced value, not a re-roll. Re-injects immediately.
+ */
+function setDiceFactValue(entryId, partIndex, factId, value) {
+    const dice = getDiceData();
+    const entry = dice.entries.find(e => e.id === entryId);
+    const part = entry && entry.parts && entry.parts[partIndex];
+    const fact = part && Array.isArray(part.facts) ? part.facts.find(f => f.id === factId) : null;
+    if (!fact || fact.value === value) return;
+    fact.value = value;
+    fact.detail = 'edited'; // the original roll/pick detail no longer describes this value
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    renderDicePane();
+}
+
 /** GENERATION_ENDED: every armed entry has now shaped a reply — mark them spent. */
 function onDiceGenerationEnded() {
     if (!getCurrentChatId()) return;
@@ -1790,14 +1836,29 @@ function renderDicePane() {
         $btns.appendTo($head);
         $head.appendTo($card);
         // Facts grouped by part; a merged entry labels each part so provenance stays legible.
-        for (const part of e.parts) {
+        for (const [pi, part] of e.parts.entries()) {
             if (merged) {
                 $('<div></div>').addClass('wf_dice_part_label').text(part.label || part.procedureId || 'Result').appendTo($card);
             }
             for (const f of part.facts) {
                 const $fact = $('<div></div>').addClass('wf_dice_fact');
                 $('<div></div>').addClass('wf_dice_fact_label').text(f.label || f.id).appendTo($fact);
-                $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($fact);
+                // Editable when its source step still offers alternatives: a dropdown
+                // of the pool / outcome options so the user can swap one value without
+                // re-rolling. Otherwise a plain, non-editable value.
+                const opts = diceFactOptions(part, f);
+                if (opts) {
+                    const values = opts.includes(f.value) ? opts : [f.value, ...opts];
+                    const $sel = $('<select></select>').addClass('wf_dice_fact_value wf_dice_fact_select text_pole')
+                        .attr('title', 'Swap this rolled value for another option from its pool (no re-roll)');
+                    for (const v of values) {
+                        $('<option></option>').val(v).text(v).prop('selected', v === f.value).appendTo($sel);
+                    }
+                    $sel.on('change', function () { setDiceFactValue(e.id, pi, f.id, String($(this).val())); });
+                    $sel.appendTo($fact);
+                } else {
+                    $('<div></div>').addClass('wf_dice_fact_value').text(f.value).appendTo($fact);
+                }
                 if (f.detail) $('<div></div>').addClass('wf_dice_fact_detail').text(f.detail).appendTo($fact);
                 $fact.appendTo($card);
             }
@@ -2962,6 +3023,7 @@ const SCENE_CSS = `
 .wf_dice_fact { display: flex; flex-direction: column; gap: 2px; }
 .wf_dice_fact_label { font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; }
 .wf_dice_fact_value { font-size: 0.95em; }
+select.wf_dice_fact_select { font-size: 0.9em; height: auto; padding: 1px 4px; max-width: 100%; cursor: pointer; }
 .wf_dice_fact_detail { font-size: 0.72em; opacity: 0.5; margin-left: auto; margin-top: -14px; }
 /* Preview of the exact text the kept rolls inject into the prompt. */
 .wf_dice_preview { border: 1px dashed var(--SmartThemeBorderColor, #444); border-radius: 8px; padding: 6px 9px; }

@@ -1082,6 +1082,11 @@ async function maybeSeedCalendarFromWorld() {
 // built-in demo tables below are offered. Payload schema, step grammar, and
 // the one-exchange lifecycle are specified in contracts/DICE_ORACLE.md.
 const DICE_TABLES_MARKER = '[[DICE_TABLES]]';
+// The NPC Memory Manifest carrier (MEMORY_CONTRACT) — the world's authoritative
+// cast registry. Read (not injected) to offer a "pin an existing character into
+// this roll" picker in the Dice tab. Unlike the dice carrier it is disable:true,
+// so the roster reader must NOT filter disabled entries out.
+const NPC_MANIFEST_MARKER = '[[NPC_MANIFEST]]';
 const DICE_PROMPT_KEY = 'world_forge_dice';
 const DICE_META_KEY = 'world_forge_dice';
 // Injection duration (contracts/DICE_ORACLE.md §3.6): how many upcoming model
@@ -1288,6 +1293,35 @@ async function readWorldDiceTables() {
 }
 
 /**
+ * The world's cast, for pinning an existing character into a roll (Variant A —
+ * the dice fix the situation; the character is authored, not rolled). Read from
+ * the [[NPC_MANIFEST]] carrier(s) (MEMORY_CONTRACT) — the authoritative registry.
+ * The manifest is disable:true, so unlike the dice reader we do NOT filter
+ * disabled entries. Returns a sorted, de-duped list of display names; empty when
+ * the world ships no manifest (older worlds — the picker then simply hides).
+ */
+async function readWorldNpcRoster() {
+    let entries;
+    try {
+        entries = await getSortedEntries();
+    } catch (e) {
+        warn('dice: could not read world info for the NPC roster', e);
+        return [];
+    }
+    const names = new Set();
+    for (const entry of (Array.isArray(entries) ? entries : [])) {
+        if (!entry || !String(entry.comment || '').includes(NPC_MANIFEST_MARKER)) continue;
+        const payload = extractJsonObject(String(entry.content || ''));
+        const npcs = payload && Array.isArray(payload.npcs) ? payload.npcs : [];
+        for (const npc of npcs) {
+            const name = npc && typeof npc.displayName === 'string' ? npc.displayName.trim() : '';
+            if (name) names.add(name);
+        }
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/**
  * Walk one procedure's steps in order, rolling/picking each one. Steps whose
  * `when` gate is unmet (or whose pool/range is broken) resolve nothing.
  * @returns {{id: string, label: string, value: string, detail: string}[]}
@@ -1370,12 +1404,18 @@ function normalizeDiceEntry(e) {
     if (!parts.length) return null;
     const total = normDiceTurns(e.turnsTotal) ?? DICE_DEFAULT_TURNS;
     const remaining = normDiceTurns(e.turnsRemaining) ?? total;
+    // Existing cast members pinned into this scene (Variant A). Display names only,
+    // de-duped; ephemeral like every dice fact — never written to memory.
+    const castNames = [...new Set((Array.isArray(e.castNames) ? e.castNames : [])
+        .filter(n => typeof n === 'string' && n.trim())
+        .map(n => n.trim()))];
     return {
         id: typeof e.id === 'string' && e.id ? e.id : newDiceEntryId(),
         parts,
         turnsTotal: total,
         turnsRemaining: Math.min(remaining, total),
         consumed: e.consumed === true,
+        castNames,
     };
 }
 
@@ -1438,10 +1478,17 @@ function diceEntryFraming(e) {
     return explicit ? explicit.framing.trim() : defaultDiceFraming(diceEntryMode(e));
 }
 
-/** One entry's block: its framing lead-in followed by its `- label: value` facts. */
+/** One entry's block: its framing lead-in, its `- label: value` facts, and any pinned cast. */
 function buildDiceEntryText(e) {
     const framing = diceEntryFraming(e);
     const lines = diceEntryFacts(e).map(f => `- ${f.label || f.id}: ${f.value}`);
+    // Pinned existing cast (Variant A): the dice fix the situation, not these
+    // characters — instruct the model to render them from their own profile.
+    const cast = Array.isArray(e.castNames) ? e.castNames : [];
+    if (cast.length) {
+        const plural = cast.length > 1;
+        lines.push(`- Also present and participating: ${cast.join(', ')} — established character${plural ? 's' : ''} from this world. Portray ${plural ? 'each' : 'them'} from their own established profile (voice, body, manner, psychology), never from the rolled facts above; the dice fix the situation, not ${plural ? 'these characters' : 'this character'}.`);
+    }
     return [framing, ...lines].join('\n');
 }
 
@@ -1483,6 +1530,17 @@ function clearDiceEntries(id) {
     saveSceneData(); // debounced chat_metadata save (shared with the scene record)
     updateDiceExtensionPrompt();
     if (sceneOpen) renderDicePane();
+}
+
+/** Remove one pinned cast member from a kept entry (Variant A). */
+function detachDiceCast(id, name) {
+    const dice = getDiceData();
+    const entry = dice.entries.find(e => e.id === id);
+    if (!entry || !Array.isArray(entry.castNames)) return;
+    entry.castNames = entry.castNames.filter(n => n !== name);
+    saveSceneData();
+    updateDiceExtensionPrompt();
+    renderDicePane();
 }
 
 /** GENERATION_ENDED: every armed entry has now shaped a reply — mark them spent. */
@@ -1539,6 +1597,12 @@ let diceSelectedProcedureId = '';
 let dicePreviewOpen = true; // remember the "Sent to the model" preview's open/closed state
 // Ids of kept results ticked for merging (survives re-render; pruned to live entries).
 const diceMergeSelection = new Set();
+// The world's cast (display names from [[NPC_MANIFEST]]) and the names currently
+// ticked to attach to the NEXT roll. Attached names are snapshot onto the entry
+// at roll time, so editing the manifest later never disturbs a kept result.
+let diceRoster = [];
+let diceRosterLoaded = false;
+const diceSelectedCast = new Set();
 
 async function loadDiceTables() {
     if (diceLoading) return;
@@ -1553,6 +1617,18 @@ async function loadDiceTables() {
             diceUsingBuiltin = true;
         }
         diceLoaded = true;
+        // Load the cast roster for the "pin an existing character" picker (Variant
+        // A). Independent of the tables — a world with no dice tables can still
+        // have a manifest, and vice versa; a failure here never blocks rolling.
+        try {
+            diceRoster = await readWorldNpcRoster();
+        } catch (e) {
+            warn('dice: NPC roster load failed', e);
+            diceRoster = [];
+        }
+        diceRosterLoaded = true;
+        // Drop any ticked cast names no longer in the roster.
+        for (const n of [...diceSelectedCast]) if (!diceRoster.includes(n)) diceSelectedCast.delete(n);
         // Keep the current selection if it still exists, else default to first.
         const ids = diceTables.procedures.map(p => p.id);
         if (!ids.includes(diceSelectedProcedureId)) diceSelectedProcedureId = ids[0] || '';
@@ -1595,6 +1671,29 @@ function renderDicePane() {
     if (!procedures.some(p => p.id === diceSelectedProcedureId)) diceSelectedProcedureId = procedures[0]?.id || '';
     $select.val(diceSelectedProcedureId);
     $('#wf_dice_roll').toggleClass('wf_dice_disabled', procedures.length === 0);
+
+    // Cast picker: chips of the world's roster ([[NPC_MANIFEST]]); ticking a name
+    // pins that existing character into the NEXT roll. Hidden entirely when the
+    // world ships no manifest (older worlds).
+    const $castRow = $('#wf_dice_cast_row');
+    const $cast = $('#wf_dice_cast');
+    if (diceRosterLoaded && diceRoster.length) {
+        $castRow.show();
+        $cast.empty();
+        for (const name of diceRoster) {
+            const on = diceSelectedCast.has(name);
+            $('<div></div>').addClass('menu_button wf_dice_cast_chip').toggleClass('wf_dice_cast_on', on)
+                .attr('title', on ? `${name} will be pinned into the next roll — click to unpin` : `Pin ${name} into the next roll`)
+                .text(name)
+                .on('click', function () {
+                    if (diceSelectedCast.has(name)) diceSelectedCast.delete(name); else diceSelectedCast.add(name);
+                    renderDicePane();
+                }).appendTo($cast);
+        }
+    } else {
+        $castRow.hide();
+        $cast.empty();
+    }
 
     // Render the kept results (each survives tab/chat re-open until spent or
     // removed), then a preview of the exact text this injects into the prompt.
@@ -1662,6 +1761,20 @@ function renderDicePane() {
                 $fact.appendTo($card);
             }
         }
+        // Pinned existing cast on this kept result — removable chips.
+        if (Array.isArray(e.castNames) && e.castNames.length) {
+            const $castLine = $('<div></div>').addClass('wf_dice_entry_cast');
+            $('<span></span>').addClass('wf_dice_entry_cast_label').text('Also here:').appendTo($castLine);
+            for (const name of e.castNames) {
+                const $chip = $('<span></span>').addClass('wf_dice_cast_chip wf_dice_cast_on wf_dice_entry_cast_chip')
+                    .attr('title', `Remove ${name} from this result`)
+                    .on('click', () => detachDiceCast(e.id, name));
+                $('<span></span>').text(name).appendTo($chip);
+                $('<i></i>').addClass('fa-solid fa-xmark').appendTo($chip);
+                $chip.appendTo($castLine);
+            }
+            $castLine.appendTo($card);
+        }
         $card.appendTo($result);
     }
 
@@ -1726,6 +1839,8 @@ function onDiceRoll() {
         turnsTotal: turns,
         turnsRemaining: turns,
         consumed: false,
+        // Snapshot the pinned cast now so a later manifest edit never disturbs it.
+        castNames: [...diceSelectedCast].filter(n => diceRoster.includes(n)),
     });
     saveSceneData();
     updateDiceExtensionPrompt();
@@ -1784,6 +1899,8 @@ function mergeDiceEntries(ids) {
         turnsTotal: Math.max(...chosen.map(e => e.turnsTotal || DICE_DEFAULT_TURNS)),
         turnsRemaining: 0,
         consumed: false,
+        // Union the pinned cast — a merged scene holds everyone who was in its parts.
+        castNames: [...new Set(chosen.flatMap(e => Array.isArray(e.castNames) ? e.castNames : []))],
     };
     merged.turnsRemaining = merged.turnsTotal;
     // Drop the chosen entries and drop the merged one in at the first's position.
@@ -1810,6 +1927,8 @@ function splitDiceEntry(id) {
         turnsTotal: entry.turnsTotal,
         turnsRemaining: entry.turnsRemaining,
         consumed: entry.consumed,
+        // Cast was pinned to the whole encounter; carry it to each split piece.
+        castNames: [...(Array.isArray(entry.castNames) ? entry.castNames : [])],
     }));
     dice.entries.splice(idx, 1, ...pieces);
     saveSceneData();
@@ -2602,6 +2721,10 @@ const SCENE_WINDOW_HTML = `
                 <input id="wf_dice_turns" type="number" class="text_pole wf_dice_turns_input" min="1" max="20" step="1" value="1" />
                 <span data-i18n="reply(ies)">reply(ies)</span>
             </label>
+            <div id="wf_dice_cast_row" class="wf_dice_cast_row" style="display:none;">
+                <div class="wf_dice_cast_label" title="Pin existing characters into the next roll. The dice fix the situation; each pinned character is played from their own profile, not the rolled facts."><span data-i18n="Also here (existing cast)">Also here (existing cast)</span></div>
+                <div id="wf_dice_cast" class="wf_dice_cast"></div>
+            </div>
             <div class="wf_dice_actions">
                 <div id="wf_dice_roll" class="menu_button menu_button_primary" title="Roll the selected procedure and add the result to the list below. Rolls stack — re-roll (↻) or remove (✕) any of them, or tick two and Merge them into one prompt."><i class="fa-solid fa-dice"></i> <span data-i18n="Roll">Roll</span></div>
                 <div id="wf_dice_clear" class="menu_button" title="Remove all kept results"><i class="fa-solid fa-xmark"></i> <span data-i18n="Clear">Clear</span></div>
@@ -2747,6 +2870,15 @@ const SCENE_CSS = `
 .wf_dice_mode_chip.wf_dice_mode_event { color: var(--SmartThemeQuoteColor, #6bb1ff); border-color: currentColor; }
 .wf_dice_actions { display: flex; gap: 6px; }
 .wf_dice_actions .menu_button { flex: 1 1 0; justify-content: center; }
+.wf_dice_cast_row { display: flex; flex-direction: column; gap: 3px; margin: 2px 0; }
+.wf_dice_cast_label { font-size: 0.85em; opacity: 0.9; }
+.wf_dice_cast { display: flex; flex-wrap: wrap; gap: 4px; }
+.wf_dice_cast_chip { font-size: 0.78em; padding: 1px 8px; cursor: pointer; opacity: 0.75; }
+.wf_dice_cast_chip.wf_dice_cast_on { opacity: 1; background-color: var(--SmartThemeQuoteColor, #6bb1ff); color: var(--SmartThemeBlurTintColor, #000); }
+.wf_dice_entry_cast { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.wf_dice_entry_cast_label { font-size: 0.72em; opacity: 0.7; }
+.wf_dice_entry_cast_chip { display: inline-flex; align-items: center; gap: 4px; }
+.wf_dice_entry_cast_chip i { font-size: 0.85em; opacity: 0.8; }
 .wf_dice_result { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .wf_dice_result:empty { display: none; }
 /* Each kept roll is a stacked card: header (label · tense · countdown · buttons)
@@ -3536,6 +3668,9 @@ function initSceneTrackerUI() {
             // invalidate so the Dice tab re-reads on next open.
             diceLoaded = false;
             diceTables = null;
+            diceRosterLoaded = false;
+            diceRoster = [];
+            diceSelectedCast.clear();
             diceMergeSelection.clear();
             if (sceneOpen) {
                 renderScene();

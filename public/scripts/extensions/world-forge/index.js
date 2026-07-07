@@ -1673,13 +1673,19 @@ function renderDicePane() {
     $('#wf_dice_roll').toggleClass('wf_dice_disabled', procedures.length === 0);
 
     // Cast picker: chips of the world's roster ([[NPC_MANIFEST]]); ticking a name
-    // pins that existing character into the NEXT roll. Hidden entirely when the
-    // world ships no manifest (older worlds).
+    // pins that existing character into the NEXT roll. While the roster is still
+    // loading the row stays hidden (don't flash the empty hint); once loaded it
+    // shows either the chips or, when the world has no cast manifest, a short hint
+    // so the feature's absence is legible instead of silently missing.
     const $castRow = $('#wf_dice_cast_row');
     const $cast = $('#wf_dice_cast');
-    if (diceRosterLoaded && diceRoster.length) {
+    const $castLabel = $castRow.find('.wf_dice_cast_label');
+    $cast.empty();
+    if (!diceRosterLoaded) {
+        $castRow.hide();
+    } else if (diceRoster.length) {
         $castRow.show();
-        $cast.empty();
+        $castLabel.show();
         for (const name of diceRoster) {
             const on = diceSelectedCast.has(name);
             $('<div></div>').addClass('menu_button wf_dice_cast_chip').toggleClass('wf_dice_cast_on', on)
@@ -1691,8 +1697,14 @@ function renderDicePane() {
                 }).appendTo($cast);
         }
     } else {
-        $castRow.hide();
-        $cast.empty();
+        // Loaded, but no cast: make the absence explicit (a group/Director world
+        // whose manifests failed to load reads the same as one with none — the
+        // hint tells the user which, instead of a silently missing control).
+        $castRow.show();
+        $castLabel.hide();
+        $('<div></div>').addClass('wf_dice_cast_empty')
+            .text('No cast manifest in this world — pinning an existing character is unavailable.')
+            .appendTo($cast);
     }
 
     // Render the kept results (each survives tab/chat re-open until spent or
@@ -2873,6 +2885,7 @@ const SCENE_CSS = `
 .wf_dice_cast_row { display: flex; flex-direction: column; gap: 3px; margin: 2px 0; }
 .wf_dice_cast_label { font-size: 0.85em; opacity: 0.9; }
 .wf_dice_cast { display: flex; flex-wrap: wrap; gap: 4px; }
+.wf_dice_cast_empty { font-size: 0.78em; opacity: 0.6; font-style: italic; }
 .wf_dice_cast_chip { font-size: 0.78em; padding: 1px 8px; cursor: pointer; opacity: 0.75; }
 .wf_dice_cast_chip.wf_dice_cast_on { opacity: 1; background-color: var(--SmartThemeQuoteColor, #6bb1ff); color: var(--SmartThemeBlurTintColor, #000); }
 .wf_dice_entry_cast { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }

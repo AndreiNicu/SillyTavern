@@ -1,6 +1,6 @@
 # Dice Oracle Contract — `[[DICE_TABLES]]`
 
-**Status:** Draft · **Version:** 2 · **Last updated:** 2026-07-06
+**Status:** Established · **Version:** 2 · **Last updated:** 2026-07-06
 
 > **Shared contract — canonical source of truth:**
 > [`AndreiNicu/World-Forge`](https://github.com/AndreiNicu/World-Forge) → `contracts/DICE_ORACLE.md`.
@@ -291,6 +291,35 @@ Absence never errors, matching every other seam in `WORLD_FORGE_SYNC.md`:
       duration (§3.6); the player can still override it per roll.
 - [ ] `when` only references earlier step ids within the same procedure.
 - [ ] Pool names referenced by `pick` exist in `pools` and are non-empty.
+
+### 6.1 Authoring guidance: roll the shape, not the choreography (informative)
+
+The payload is well-formed long before it is *well-authored*. The oracle's whole
+premise is the what/how split (§1, §3.5): the dice fix **what is true**, the
+model narrates **how it plays out**. Procedures that author past that line — that
+roll the blow-by-blow — degrade the runtime in two predictable ways: the model
+**recites** the facts like a checklist instead of performing them, and
+multi-participant scenes get **serialized** (each participant narrated in turn)
+instead of played as one encounter. This is a producer-quality concern, not a
+schema rule (nothing here changes the payload shape), but it is the difference
+between an oracle that helps and one that flattens the scene:
+
+- **Roll shape and flavor; leave choreography to the model.** Fix the setting,
+  the cast (as *traits* — who is there), the *configuration* (how they are
+  arranged), the *valence* (how it went), and at most one *signature detail*.
+  Do **not** roll positions, act-by-act sequence, per-participant acts, or a
+  per-participant finish — those are the model's `how`.
+- **One encounter is one procedure.** Individuate multiple participants as gated
+  *trait* steps inside a single procedure; never emit a procedure per participant
+  or roll one procedure once per participant. Concatenated per-person records are
+  injected as separate result groups (§4) and narrate in series.
+- **State simultaneity in the fact.** A count outcome > 1 must say so in its
+  `text` ("two men, together, at the same time"), paired with one
+  encounter-level configuration step and **one** shared outcome — never a
+  per-participant climax.
+- **Framing fixes register, not order.** For a recount, `framing` should assert
+  one continuous scene told in-voice and defer choreography to the model; it must
+  never invite a sequence ("narrate the sequence of events", "in order").
 
 ## 7. Future direction (informative — not part of schema 2)
 

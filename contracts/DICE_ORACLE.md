@@ -1,6 +1,6 @@
 # Dice Oracle Contract — `[[DICE_TABLES]]`
 
-**Status:** Established · **Version:** 2 · **Last updated:** 2026-07-06
+**Status:** Established · **Version:** 2 · **Last updated:** 2026-07-07
 
 > **Shared contract — canonical source of truth:**
 > [`AndreiNicu/World-Forge`](https://github.com/AndreiNicu/World-Forge) → `contracts/DICE_ORACLE.md`.
@@ -323,20 +323,65 @@ between an oracle that helps and one that flattens the scene:
 
 ## 7. Future direction (informative — not part of schema 2)
 
-Recorded so producer and consumer evolve toward the same place:
+Recorded so producer and consumer evolve toward the same place. **"More complex
+dice" is not one road — it is three, with sharply different cost and different
+relationships to this contract's founding scope (§1: the oracle is an *ephemeral
+narrative randomizer*, not a stateful game engine).** Keep them separate; the
+oracle's statelessness is a feature, not a limitation to grind away.
 
-- **Temp NPC resolution & persistence** — resolve the unnamed NPC a story
-  conjures ("TOM") to a temporary id, attach the rolled attributes to it so it
-  stays consistent while it matters, and clear it once it has served its
-  purpose. Likely meshes with npc-memory's slugify-miss path
-  (`WORLD_FORGE_SYNC.md` §3) as the temp-NPC detector.
+### 7.1 Richer randomness (stays inside the oracle)
+
+Additive extensions to *how a value is produced*, all backward-compatible (a
+future `schema: 3`, uniform/no-op fallback when absent). None require state, so
+none threaten §1:
+
+- **Weighted pools** — non-uniform `pick`, e.g. `[{"value":"…","weight":3}]`
+  (a ~one-line consumer change over today's uniform pick; the highest-value
+  first step). *(Roll `outcomes` are already weighted by range size, and
+  degrees-of-success already work today — `1d20 → {1-9:fail,10-14:partial,
+  15-20:success}` — so this gap is pools, not rolls.)*
+- **Pick N distinct** — draw several different values from one pool in a step.
+- **Richer dice grammar** — advantage/disadvantage (`2d20kh1`), keep/drop
+  (`4d6kh3`), exploding dice (`d6!`). Each is a self-contained extension to the
+  single `NdM(+/-K)` roll-formula grammar (§3.4); no ripple elsewhere.
+- **Derived modifiers** — a roll that adds a value resolved by an earlier step.
+
+### 7.2 Resolution mechanics (partly fits)
+
+- **Skill-check-vs-difficulty and success-counting pools** (roll + threshold →
+  outcome; count successes ≥ N). The *resolution* half maps cleanly onto the
+  existing `outcomes` model. It stays in the oracle right up to the point it
+  needs a **stat modifier** (from a character sheet) or the result must
+  **persist** — at which point it has left the oracle for §7.3.
+
+### 7.3 Stateful RPG (a separate subsystem — NOT the oracle)
+
+Character sheets, attributes, HP, inventory, combat, and consequences that
+**carry forward** are a different system with its own state and its own roll
+log. Bolting them onto the ephemeral oracle would destroy exactly what makes it
+safe and simple (no state ⇒ no migration, no memory-contract entanglement, no
+corruption). When the RPG layer is built it wants its own home:
+
 - **Server-authoritative rolls** — move the roll behind a server plugin
-  (rpg-engine-kit pattern) with a per-chat roll log, so rolls are tamper-proof
-  and auditable, and to produce roll statistics.
-- **Weighted pools / procedure auto-suggest** — non-uniform pick weights; the
-  Scene Tracker suggesting which procedure fits the current beat.
+  (rpg-engine-kit pattern) with a per-chat roll log, so rolls are tamper-proof,
+  auditable, and produce statistics. This is the substrate a real RPG layer
+  needs; the current client-side oracle is not.
+- **A character-state channel** — sheets/stats/HP persisted deliberately (likely
+  leaning on npc-memory or a new contract), which §7.2 checks would read from.
+- **Temp NPC resolution & persistence** — resolve the unnamed NPC a story
+  conjures ("TOM") to a temporary id, attach the rolled attributes so it stays
+  consistent while it matters, then clear it. Meshes with npc-memory's
+  slugify-miss path (`WORLD_FORGE_SYNC.md` §3) as the temp-NPC detector. (This
+  is the bridge between the oracle and persistent state — the first place §7.1
+  randomness meets §7.3 memory.)
 
-Each of these is a schema/version bump with the usual graceful fallback.
+Also: **procedure auto-suggest** — the Scene Tracker proposing which procedure
+fits the current beat — is an independent UX nicety, orthogonal to all three
+tiers.
+
+Each §7.1/§7.2 item is a schema/version bump with the usual graceful fallback;
+§7.3 is a distinct design, to be specified on its own when the RPG layer is
+actually built — not accreted onto this contract.
 
 ## 8. Relationship to the other contracts
 

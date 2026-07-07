@@ -1294,13 +1294,35 @@ async function readWorldDiceTables() {
 
 /**
  * The world's cast, for pinning an existing character into a roll (Variant A —
- * the dice fix the situation; the character is authored, not rolled). Read from
- * the [[NPC_MANIFEST]] carrier(s) (MEMORY_CONTRACT) — the authoritative registry.
- * The manifest is disable:true, so unlike the dice reader we do NOT filter
- * disabled entries. Returns a sorted, de-duped list of display names; empty when
- * the world ships no manifest (older worlds — the picker then simply hides).
+ * the dice fix the situation; the character is authored, not rolled). Sourced
+ * from the [[NPC_MANIFEST]] carrier(s) (MEMORY_CONTRACT) — the authoritative
+ * registry. Returns a sorted, de-duped list of display names; empty when the
+ * world ships no manifest (older worlds — the picker then simply hides).
+ *
+ * Preferred path reuses the npc-memory consumer's aggregated index. That matters
+ * because in a **group chat** `getSortedEntries()` returns only the active card's
+ * lorebook, so the per-NPC lorebooks that carry the manifests (the Director-card
+ * / per-character setup) are missing — npc-memory's reader explicitly gathers
+ * every group member's lorebook to fix exactly this. Reusing it keeps the dice
+ * picker's cast identical to what memory tracks. Falls back to a self-contained
+ * single-book read when npc-memory isn't installed.
  */
 async function readWorldNpcRoster() {
+    // Preferred: the npc-memory index (multi-book + group-member aware).
+    try {
+        const { loadIndex } = await import('../npc-memory/manifest-reader.js');
+        const index = await loadIndex();
+        const names = [...(index?.byId?.values?.() ?? [])]
+            .map(r => (r && typeof r.displayName === 'string' ? r.displayName.trim() : ''))
+            .filter(Boolean);
+        if (names.length) return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+        // npc-memory present but saw no manifest NPCs — fall through to the local
+        // read (covers a world-forge-only install path or an odd load order).
+    } catch (e) {
+        log('dice: npc-memory manifest reader unavailable; using local roster read', e);
+    }
+    // Fallback: self-contained read. Handles the common single-card case; a group
+    // chat may still miss other members' books (that's what the preferred path is for).
     let entries;
     try {
         entries = await getSortedEntries();

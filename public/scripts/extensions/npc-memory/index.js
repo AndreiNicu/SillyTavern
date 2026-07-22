@@ -24,6 +24,7 @@ import { buildInjectionText, applyInjection, clearInjection } from './injector.j
 import { captureFromMessage } from './capture.js';
 import { runBatchSummary } from './summarize.js';
 import { compressChat, uncompressChat, applyRecapFromMarker } from './compress.js';
+import { openMemoryManager } from './manage.js';
 import { setVerbose, dlog, setIndex, setLastTurn, setLastCapture, renderStatus, renderReport, renderReportText } from './debug.js';
 
 const MODULE_NAME = 'npc-memory';
@@ -312,6 +313,7 @@ async function addSettingsPanel() {
     });
     $('#npcmem_refresh').on('click', () => refreshIndex());
     $('#npcmem_inspect').on('click', () => openInspector());
+    $('#npcmem_manage').on('click', () => openMemoryManager());
     $('#npcmem_rescan').on('click', () => rescanMemory());
     $('#npcmem_compress').on('click', () => compressNow());
     $('#npcmem_uncompress').on('click', () => uncompressNow());

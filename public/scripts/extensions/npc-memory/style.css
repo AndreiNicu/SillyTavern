@@ -34,3 +34,53 @@
     max-height: 16em;
     overflow: auto;
 }
+
+/* Long-term memory manager (popup) */
+.npcmem-manage .npcmem-manage-intro {
+    margin: 0 0 1em;
+    opacity: 0.75;
+}
+
+.npcmem-manage .npcmem-manage-npc {
+    margin-bottom: 1em;
+}
+
+.npcmem-manage .npcmem-manage-npc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    padding-bottom: 0.25em;
+    margin-bottom: 0.4em;
+}
+
+.npcmem-manage .npcmem-manage-npc-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.npcmem-manage .npcmem-manage-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5em;
+    padding: 0.3em 0;
+    border-bottom: 1px solid var(--black30a);
+}
+
+.npcmem-manage .npcmem-manage-entry-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.npcmem-manage .npcmem-manage-entry-meta {
+    font-size: 0.85em;
+    margin-top: 0.15em;
+}
+
+.npcmem-manage .npcmem-manage-del {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    cursor: pointer;
+}

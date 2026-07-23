@@ -209,6 +209,43 @@ export function addLongTerm(id, texts, meta = {}) {
 }
 
 /**
+ * Remove a single long-term memory from an NPC, matched by timestamp (and exact
+ * text when supplied, to disambiguate the rare case of colliding timestamps).
+ * Used by the memory manager when the user prunes a durable memory that no
+ * longer fits the story (e.g. after editing, undoing, or branching the chat).
+ * @param {string} id
+ * @param {number} ts        Entry timestamp (`longTerm[].ts`).
+ * @param {string} [text]    Entry text; when given, must also match.
+ * @returns {boolean} true if an entry was removed.
+ */
+export function removeLongTerm(id, ts, text) {
+    const rec = getRecord(id);
+    if (!rec || !Array.isArray(rec.longTerm)) return false;
+    const wantText = text === undefined ? undefined : String(text);
+    const i = rec.longTerm.findIndex(e =>
+        e?.ts === ts && (wantText === undefined || String(e?.text ?? '') === wantText));
+    if (i === -1) return false;
+    rec.longTerm.splice(i, 1);
+    rec.updatedAt = Date.now();
+    return true;
+}
+
+/**
+ * Remove every long-term memory for an NPC (working-memory slots are left
+ * intact — they roll over on their own each turn).
+ * @param {string} id
+ * @returns {number} how many were removed.
+ */
+export function clearLongTerm(id) {
+    const rec = getRecord(id);
+    if (!rec || !Array.isArray(rec.longTerm) || rec.longTerm.length === 0) return 0;
+    const n = rec.longTerm.length;
+    rec.longTerm = [];
+    rec.updatedAt = Date.now();
+    return n;
+}
+
+/**
  * Record a captured event against an NPC and update its memory slot
  * (contract §6: withUser -> lastWithUser, else lastAlone).
  *

@@ -2416,7 +2416,9 @@ router.post('/generate', async function (request, response) {
             }
             if (request.body.reasoning_effort) {
                 const effort = NANOGPT_REASONING_EFFORT_MAP[request.body.reasoning_effort];
-                bodyParams['reasoning'] = { effort: effort };
+                if (effort) {
+                    bodyParams['reasoning'] = { effort: effort };
+                }
             }
 
             const isClaude = /(?:^|\/)claude[-_]/.test(request.body.model);

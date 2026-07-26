@@ -3163,6 +3163,14 @@ const SCENE_CSS = `
 .wf_scene_stats { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; margin-top: 8px; align-items: center; }
 .wf_scene_stats label { font-size: 0.82em; opacity: 0.8; }
 .wf_scene_stats .text_pole { width: 100%; box-sizing: border-box; }
+.wf_scene_cycle { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 0.82em; padding-top: 4px; border-top: 1px dashed var(--SmartThemeBorderColor, #444); }
+.wf_scene_cycle_state { flex: 1 1 auto; min-width: 0; opacity: 0.85; }
+.wf_scene_cycle_state.wf_suspended { opacity: 0.5; font-style: italic; }
+.wf_scene_cycle_anchor { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; opacity: 0.8; }
+.wf_scene_cycle_anchor input { width: 3.6em; }
+.wf_scene_cycle_toggle { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.wf_scene_cycle_toggle input { margin: 0; }
 .wf_scene_remove { flex: 0 0 auto; cursor: pointer; opacity: 0.6; }
 .wf_scene_remove:hover { opacity: 1; color: var(--fullred, #e06666); }
 .wf_scene_add_row { display: flex; gap: 6px; align-items: center; }
@@ -3483,6 +3491,83 @@ function renderPresent() {
             field('clothing', 'Clothing', 'e.g. red dress, leather armor');
             field('mood', 'Mood', 'e.g. calm, angry, flustered');
             field('lastLocation', 'Last known location', 'optional');
+
+            // Body cycle (contracts/BODY_CYCLES.md). Shown only when this person
+            // has a seeded cycle. The phase itself is DERIVED and therefore
+            // read-only here — what is editable is the anchor (which cycle day
+            // they were on at Day 1) and the suspend flag.
+            //
+            // Suspend is the contract's §7 suppression case: pregnancy,
+            // contraception, illness, magic. It is per-chat state because it
+            // begins from something that happened in *this* playthrough, which a
+            // world file cannot know. Note that suspending only stops the cycle —
+            // if the model should also KNOW she is pregnant, that belongs in the
+            // "Injury / soreness" condition field above, which is already
+            // injected. The contract deliberately does not model pregnancy as a
+            // state of its own yet.
+            const cycle = (scene.cycles || []).find(c => sameCharacter(c.name, person.name));
+            if (cycle) {
+                const $row = $('<div class="wf_scene_cycle"></div>');
+                const $state = $('<div class="wf_scene_cycle_state"></div>');
+                const paintState = () => {
+                    const day = Number(scene.day) || 0;
+                    if (cycle.suspended) {
+                        $state.addClass('wf_suspended')
+                            .text(`${cycle.label} suspended — not tracked or injected.`);
+                        return;
+                    }
+                    $state.removeClass('wf_suspended');
+                    if (day < 1) {
+                        $state.text(`${cycle.label}: needs a day counter (set Day above).`);
+                        return;
+                    }
+                    const cycleDay = cycleDayForDay(scene, cycle);
+                    const phase = cyclePhaseFor(cycle, cycleDay);
+                    $state.text(phase
+                        ? `${cycle.label}: ${phase.name} — day ${cycleDay} of ${cycleLength(cycle)}`
+                        : `${cycle.label}: day ${cycleDay} of ${cycleLength(cycle)}`);
+                };
+                paintState();
+
+                const $anchor = $('<div class="wf_scene_cycle_anchor"></div>')
+                    .attr('title', `Which cycle day ${person.name || 'this character'} was on at Day 1 (1–${cycleLength(cycle)})`);
+                const $anchorInput = $('<input class="text_pole" type="number" min="1">')
+                    .attr('max', String(cycleLength(cycle)))
+                    .val(cycle.startDay)
+                    .on('change', function () {
+                        const length = cycleLength(cycle);
+                        let v = Math.round(Number($(this).val()));
+                        if (!Number.isFinite(v) || v < 1) v = 1;
+                        cycle.startDay = ((v - 1) % length) + 1;
+                        $(this).val(cycle.startDay);
+                        saveSceneData();
+                        paintState();
+                        updateSceneExtensionPrompt();
+                    });
+                $anchor.append($('<label></label>').text('day 1 ='), $anchorInput);
+
+                const $toggle = $('<label class="wf_scene_cycle_toggle" title="Suspend this cycle (pregnancy, contraception, illness, magic). Set the condition field above if the model should know why."></label>');
+                const $box = $('<input type="checkbox">')
+                    .prop('checked', !!cycle.suspended)
+                    .on('change', function () {
+                        cycle.suspended = $(this).prop('checked');
+                        saveSceneData();
+                        paintState();
+                        updateSceneExtensionPrompt();
+                    });
+                $toggle.append($box, $('<span></span>').text('suspend'));
+
+                // The phase is derived from the day counter, so editing the Day
+                // field has to repaint this line. Stash the painter on the row and
+                // let refreshCycleStates() (called from renderSceneDatePreview,
+                // the seam every date handler already goes through) find it —
+                // cheaper and less disruptive than re-rendering every person card
+                // on each keystroke.
+                $row.data('wfPaintCycle', paintState);
+                $row.append($state, $anchor, $toggle);
+                $stats.append($row);
+            }
+
             $card.append($stats);
         }
 
@@ -3725,6 +3810,20 @@ function renderSceneDatePreview() {
         if (scene.openEnded) text += ' (open-ended)';
     }
     $('#wf_scene_date_preview').text(text);
+    refreshCycleStates();
+}
+
+/**
+ * Repaint the per-person body-cycle state lines in place. Cycle phases are
+ * derived from the day counter, so every date edit changes them; this is called
+ * from renderSceneDatePreview() because that is the one seam all the date
+ * handlers already pass through.
+ */
+function refreshCycleStates() {
+    $('#wf_scene_present_list .wf_scene_cycle').each(function () {
+        const paint = $(this).data('wfPaintCycle');
+        if (typeof paint === 'function') paint();
+    });
 }
 
 /** Show the calendar controls vs the free-form month/manual-limit fallback. */

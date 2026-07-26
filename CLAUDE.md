@@ -21,6 +21,7 @@ read-only at the repo root):
 - `contracts/MEMORY_CONTRACT.md` — the npc-memory data channel (manifest, facets, ids, turn tag, scenes, prose fallback).
 - `contracts/WORLD_FORGE_SYNC.md` — the runtime seams (Director tag, alias coverage, `</style_contract>` marker) + producer conformance checklist.
 - `contracts/DICE_ORACLE.md` — the dice oracle channel (`[[DICE_TABLES]]` carrier, roll-table payload, authoritative-facts injection).
+- `contracts/BODY_CYCLES.md` — 🚧 **draft, no consumer yet**: the proposed `[[BODY_CYCLES]]` recurring-body-state seed (per-character phases, derived from the Scene Tracker day counter). Read it before adding Scene Tracker supplementary state; nothing here implements it yet.
 
 If those expectations change, it is a **contract change**:
 

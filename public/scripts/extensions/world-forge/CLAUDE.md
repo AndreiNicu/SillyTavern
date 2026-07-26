@@ -19,6 +19,7 @@ root):
 - `contracts/WORLD_FORGE_SYNC.md` — the runtime seams: Director-card tag (§2), alias coverage (§3), the `</style_contract>` marker (§4), `style_override` runtime.
 - `contracts/MEMORY_CONTRACT.md` — the npc-memory data channel the Scene Tracker's roster feeds into (scene gating maps present names → stable ids).
 - `contracts/DICE_ORACLE.md` — the Scene Tracker's Dice tab: the `[[DICE_TABLES]]` carrier entry, the roll-table payload schema, and the `<dice_oracle>` injection lifecycle.
+- `contracts/BODY_CYCLES.md` — 🚧 **draft, not implemented**: the proposed `[[BODY_CYCLES]]` seed for recurring body states as Scene Tracker *supplementary* state (per-character phases derived from the day counter, the way the weekday and anchored month already are). Read it before touching the scene record's shape or adding new tracked state.
 
 ## If those expectations actually change, it's a contract change
 

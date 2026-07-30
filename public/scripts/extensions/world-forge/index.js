@@ -543,7 +543,9 @@ const SCENE_EXTRACT_MAX_TOKENS = 1024;
 const SCENE_ABSENCE_GRACE = 3;
 
 /** @typedef {{name: string, role: 'user'|'character'|'npc', health?: string, condition?: string, clothing?: string, mood?: string, lastLocation?: string, missesScans?: number}} ScenePerson */
-/** @typedef {{location: string, time: string, day: number, dayLimit: number, openEnded: boolean, weekdayStart: number, month: string, startMonth: number, startYear: number, endMonth: number, endYear: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number}} SceneData */
+/** @typedef {{name: string, days: number, note?: string}} BodyCyclePhase */
+/** @typedef {{id: string, name: string, label: string, startDay: number, phases: BodyCyclePhase[], suspended: boolean}} BodyCycle */
+/** @typedef {{location: string, time: string, day: number, dayLimit: number, openEnded: boolean, weekdayStart: number, month: string, startMonth: number, startYear: number, endMonth: number, endYear: number, present: ScenePerson[], director: string, inject: boolean, injectPosition: number, injectDepth: number, injectRole: number, injectInterval: number, cycles: BodyCycle[]}} SceneData */
 
 // Weekday names, indexed to match the day-of-week anchor (weekdayStart). The
 // weekday shown for a given day is derived purely from the day counter and this
@@ -612,6 +614,11 @@ function defaultSceneData() {
         injectDepth: 4,
         injectRole: extension_prompt_roles.SYSTEM,       // 0 = system
         injectInterval: 1,                               // every N user messages (1 = always)
+        // Recurring body states (menstrual cycle, estrus, a lunar turn), seeded
+        // once from the world's [[BODY_CYCLES]] block. Derived from the day
+        // counter the same way the weekday and calendar month are — never stored
+        // as a current position, and never asked of the model. Empty = none.
+        cycles: [],
     };
 }
 
@@ -661,6 +668,40 @@ function getSceneData() {
         if (p && p.role !== 'user' && p.role !== 'character' && p.role !== 'npc') p.role = 'npc';
         if (p && (typeof p.missesScans !== 'number' || !Number.isFinite(p.missesScans))) p.missesScans = 0;
     }
+    // Body cycles. Deliberately NOT part of `present`: that array is spliced on
+    // removal, rebuilt from scan results, and pruned via missesScans/left, so a
+    // cycle living there would vanish the moment the character left the scene. A
+    // cycle definition outlives presence. Drop unusable entries individually
+    // rather than discarding the set (same tolerance as normalizeDiceTables).
+    if (!Array.isArray(s.cycles)) s.cycles = [];
+    // Coerce in place and splice out unusable entries, rather than rebuilding the
+    // array: callers (and the tracker UI) hold references to individual cycle
+    // objects, and a fresh object per getSceneData() call would strand them.
+    // Same in-place discipline the `present` loop above uses.
+    for (let i = s.cycles.length - 1; i >= 0; i--) {
+        const c = s.cycles[i];
+        if (!c || typeof c !== 'object') { s.cycles.splice(i, 1); continue; }
+        if (!Array.isArray(c.phases)) c.phases = [];
+        for (let j = c.phases.length - 1; j >= 0; j--) {
+            const ph = c.phases[j];
+            const days = Math.round(Number(ph?.days));
+            if (!ph || typeof ph !== 'object' || !String(ph.name || '').trim()
+                || !Number.isFinite(days) || days < 1) { c.phases.splice(j, 1); continue; }
+            ph.name = String(ph.name).trim();
+            ph.days = days;
+            if (String(ph.note || '').trim()) ph.note = String(ph.note).trim();
+            else delete ph.note;
+        }
+        if (!c.phases.length) { s.cycles.splice(i, 1); continue; }
+        c.id = String(c.id || '').trim();
+        c.name = String(c.name || '').trim();
+        c.label = String(c.label || '').trim() || 'cycle';
+        const length = c.phases.reduce((n, ph) => n + ph.days, 0);
+        let startDay = Math.round(Number(c.startDay));
+        if (!Number.isFinite(startDay) || startDay < 1) startDay = 1;
+        c.startDay = ((startDay - 1) % length) + 1;
+        c.suspended = !!c.suspended;
+    }
     return s;
 }
 
@@ -689,6 +730,71 @@ function weekdayForDay(scene) {
     const start = Number(scene.weekdayStart);
     if (day < 1 || !Number.isFinite(start) || start < 0 || start > 6) return '';
     return WEEKDAYS[(((start + (day - 1)) % 7) + 7) % 7];
+}
+
+/** Total days in one revolution of a cycle — the sum of its phase durations. */
+function cycleLength(cycle) {
+    return (cycle.phases || []).reduce((n, ph) => n + (Number(ph.days) || 0), 0);
+}
+
+/**
+ * The cycle day for the scene's current day, derived from the day counter and the
+ * cycle's anchor (startDay = the cycle day this character is on at Day 1) — the
+ * same anchor-plus-counter shape as weekdayForDay. Stateless by design: nothing
+ * is stored or advanced, so it cannot drift, and correcting the day counter
+ * corrects the cycle for free.
+ *
+ * Returns 0 when no day is tracked, the cycle is suspended, or it is unusable.
+ * @param {SceneData} scene
+ * @param {BodyCycle} cycle
+ * @returns {number} 1-based cycle day, or 0
+ */
+function cycleDayForDay(scene, cycle) {
+    const day = Number(scene.day) || 0;
+    if (day < 1 || !cycle || cycle.suspended) return 0;
+    const length = cycleLength(cycle);
+    if (length < 1) return 0;
+    const start = Math.max(1, Math.round(Number(cycle.startDay)) || 1);
+    return (((day - 1 + start - 1) % length) + length) % length + 1;
+}
+
+/**
+ * The phase a given cycle day falls in — walk the phase durations until the
+ * running total reaches it. Durations (rather than day ranges) are what make this
+ * total: gaps and overlaps are unrepresentable, so every day in 1..length lands
+ * in exactly one phase. Returns null when the day is out of range.
+ * @param {BodyCycle} cycle
+ * @param {number} cycleDay
+ * @returns {BodyCyclePhase|null}
+ */
+function cyclePhaseFor(cycle, cycleDay) {
+    if (!(cycleDay >= 1)) return null;
+    let total = 0;
+    for (const ph of cycle.phases || []) {
+        total += Number(ph.days) || 0;
+        if (cycleDay <= total) return ph;
+    }
+    return null;
+}
+
+/**
+ * The cycle line for a person in the scene, or '' when they have none active.
+ * Matched by display name, the same way the roster is keyed.
+ * @param {SceneData} scene
+ * @param {string} name
+ * @returns {string}
+ */
+function cycleNoteForPerson(scene, name) {
+    const who = String(name || '').trim();
+    if (!who) return '';
+    const cycle = (scene.cycles || []).find(c => sameCharacter(c.name, who));
+    if (!cycle) return '';
+    const cycleDay = cycleDayForDay(scene, cycle);
+    if (!cycleDay) return '';
+    const phase = cyclePhaseFor(cycle, cycleDay);
+    if (!phase) return '';
+    const head = `${cycle.label || 'cycle'}: ${phase.name} (day ${cycleDay} of ${cycleLength(cycle)})`;
+    return phase.note ? `${head} — ${phase.note}` : head;
 }
 
 /** True when the anchored calendar is in use (a start month is set and a day is tracked). */
@@ -918,6 +1024,12 @@ function buildSceneBlock(scene) {
             const extra = [];
             if (String(p.clothing || '').trim()) extra.push(`  Wearing: ${p.clothing.trim()}`);
             if (String(p.mood || '').trim()) extra.push(`  Mood: ${p.mood.trim()}`);
+            // Derived, never scanned — see the cycles note in getSceneData. The
+            // `role === 'user'` guard above also keeps a protagonist cycle out of
+            // the prompt on its own, which is what contracts/BODY_CYCLES.md §7
+            // defers until the {{user}} id rule is settled.
+            const cycleNote = cycleNoteForPerson(scene, p.name);
+            if (cycleNote) extra.push(`  ${cycleNote.charAt(0).toUpperCase()}${cycleNote.slice(1)}`);
             if (bits.length || extra.length) {
                 status.push(`- ${p.name}${bits.length ? ` — ${bits.join('; ')}` : ''}`);
                 status.push(...extra);
@@ -1073,6 +1185,120 @@ async function maybeSeedCalendarFromWorld() {
         if (sceneOpen) renderScene();
         updateSceneExtensionPrompt();
     }
+}
+
+// ------------------------------ body cycles ---------------------------------
+// Optional producer hand-off: a World-Forge export may carry a world-level
+// [[BODY_CYCLES]] lorebook entry declaring recurring body states (a menstrual
+// cycle, a species' estrus, a lunar turn) per character — a phase list with
+// durations, the cycle day each character is on at Day 1, and a terse behavioral
+// note per phase. A brand-new chat seeds its cycle definitions from it; the phase
+// itself is then DERIVED from the day counter on every block build, exactly as
+// the weekday and anchored month are. Graceful enhancement: worlds without the
+// block keep behaving as before. See contracts/BODY_CYCLES.md (draft, v0).
+const BODY_CYCLES_MARKER = '[[BODY_CYCLES]]';
+
+/**
+ * Validate/normalise a [[BODY_CYCLES]] payload (contracts/BODY_CYCLES.md §3).
+ * Tolerant per the contract's §5: an unusable cycle is dropped individually with
+ * a warning rather than discarding the set. Returns a (possibly empty) array.
+ * @param {Record<string, any>|null} payload
+ * @returns {BodyCycle[]}
+ */
+function normalizeBodyCycles(payload) {
+    const out = [];
+    const cycles = Array.isArray(payload?.cycles) ? payload.cycles : [];
+    for (const c of cycles) {
+        if (!c || typeof c !== 'object') continue;
+        const id = String(c.id || '').trim();
+        if (!id) { log('body cycles: dropping a cycle with no id'); continue; }
+
+        const phases = (Array.isArray(c.phases) ? c.phases : [])
+            .filter(ph => ph && typeof ph === 'object' && String(ph.name || '').trim())
+            .map(ph => {
+                const days = Math.round(Number(ph.days));
+                return {
+                    name: String(ph.name).trim(),
+                    days: Number.isFinite(days) && days >= 1 ? days : 0,
+                    ...(String(ph.note || '').trim() ? { note: String(ph.note).trim() } : {}),
+                };
+            })
+            .filter(ph => ph.days >= 1);
+        if (!phases.length) { log(`body cycles: dropping "${id}" — no usable phases`); continue; }
+
+        const length = phases.reduce((n, ph) => n + ph.days, 0);
+        // Out of range wraps rather than erroring (§5); non-integer falls back to 1.
+        let startDay = Math.round(Number(c.startDay));
+        if (!Number.isFinite(startDay) || startDay < 1) startDay = 1;
+        startDay = ((startDay - 1) % length) + 1;
+
+        out.push({
+            id,
+            // Display name for roster matching. The carrier is keyed by stable slug
+            // (MEMORY_CONTRACT.md §4) while the scene roster is keyed by name, so
+            // the slug is de-slugged as a starting point; a future manifest join
+            // can resolve it properly (contracts/BODY_CYCLES.md §3.2).
+            name: String(c.name || '').trim() || id.replace(/_/g, ' ').replace(/\b\w/g, m => m.toUpperCase()),
+            label: String(c.label || '').trim() || 'cycle',
+            startDay,
+            phases,
+            suspended: false,
+        });
+    }
+    return out;
+}
+
+/**
+ * Read the world's [[BODY_CYCLES]] block, if any. Same enabled-but-inert carrier
+ * convention as [[WORLD_CALENDAR]] and [[DICE_TABLES]]: entries with
+ * `disable: true` are skipped, so the producer must emit the entry enabled and
+ * keep it inert with `key: []` + `constant: false`.
+ * @returns {Promise<BodyCycle[]>} normalised cycles; empty when absent/unusable
+ */
+async function readWorldBodyCycles() {
+    let entries;
+    try {
+        entries = await getSortedEntries();
+    } catch (e) {
+        warn('body cycles: could not read world info', e);
+        return [];
+    }
+    const entry = (Array.isArray(entries) ? entries : [])
+        .find(e => e && !e.disable && String(e.comment || '').includes(BODY_CYCLES_MARKER));
+    if (!entry) return [];
+    const payload = extractJsonObject(String(entry.content || ''));
+    if (!payload) {
+        log('body cycles: entry found but payload was unparseable');
+        return [];
+    }
+    return normalizeBodyCycles(payload);
+}
+
+/**
+ * Seed a brand-new chat's cycle definitions from the world's [[BODY_CYCLES]]
+ * block. Fires only when no cycles are recorded yet (a pristine record), so it
+ * never clobbers a user's edits or a suspend they have set.
+ *
+ * Note this seeds definitions only — never a current position. The phase is
+ * always derived from the day counter (cycleDayForDay), so nothing here needs to
+ * run again as days pass.
+ */
+async function maybeSeedBodyCyclesFromWorld() {
+    if (!getCurrentChatId()) return;
+    const scene = getSceneData();
+    if ((scene.cycles || []).length) return;
+
+    const cycles = await readWorldBodyCycles();
+    if (!cycles.length) return;
+    // The chat may have changed (or the user may have started editing) while the
+    // world info was loading; only seed if it is still pristine.
+    if ((getSceneData().cycles || []).length) return;
+
+    scene.cycles = cycles;
+    log(`seeded ${cycles.length} body cycle(s) from world [[BODY_CYCLES]] block`);
+    saveSceneData();
+    if (sceneOpen) renderScene();
+    updateSceneExtensionPrompt();
 }
 
 // ------------------------------- dice oracle --------------------------------
@@ -2937,6 +3163,14 @@ const SCENE_CSS = `
 .wf_scene_stats { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; margin-top: 8px; align-items: center; }
 .wf_scene_stats label { font-size: 0.82em; opacity: 0.8; }
 .wf_scene_stats .text_pole { width: 100%; box-sizing: border-box; }
+.wf_scene_cycle { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 0.82em; padding-top: 4px; border-top: 1px dashed var(--SmartThemeBorderColor, #444); }
+.wf_scene_cycle_state { flex: 1 1 auto; min-width: 0; opacity: 0.85; }
+.wf_scene_cycle_state.wf_suspended { opacity: 0.5; font-style: italic; }
+.wf_scene_cycle_anchor { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; opacity: 0.8; }
+.wf_scene_cycle_anchor input { width: 3.6em; }
+.wf_scene_cycle_toggle { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.wf_scene_cycle_toggle input { margin: 0; }
 .wf_scene_remove { flex: 0 0 auto; cursor: pointer; opacity: 0.6; }
 .wf_scene_remove:hover { opacity: 1; color: var(--fullred, #e06666); }
 .wf_scene_add_row { display: flex; gap: 6px; align-items: center; }
@@ -3257,6 +3491,83 @@ function renderPresent() {
             field('clothing', 'Clothing', 'e.g. red dress, leather armor');
             field('mood', 'Mood', 'e.g. calm, angry, flustered');
             field('lastLocation', 'Last known location', 'optional');
+
+            // Body cycle (contracts/BODY_CYCLES.md). Shown only when this person
+            // has a seeded cycle. The phase itself is DERIVED and therefore
+            // read-only here — what is editable is the anchor (which cycle day
+            // they were on at Day 1) and the suspend flag.
+            //
+            // Suspend is the contract's §7 suppression case: pregnancy,
+            // contraception, illness, magic. It is per-chat state because it
+            // begins from something that happened in *this* playthrough, which a
+            // world file cannot know. Note that suspending only stops the cycle —
+            // if the model should also KNOW she is pregnant, that belongs in the
+            // "Injury / soreness" condition field above, which is already
+            // injected. The contract deliberately does not model pregnancy as a
+            // state of its own yet.
+            const cycle = (scene.cycles || []).find(c => sameCharacter(c.name, person.name));
+            if (cycle) {
+                const $row = $('<div class="wf_scene_cycle"></div>');
+                const $state = $('<div class="wf_scene_cycle_state"></div>');
+                const paintState = () => {
+                    const day = Number(scene.day) || 0;
+                    if (cycle.suspended) {
+                        $state.addClass('wf_suspended')
+                            .text(`${cycle.label} suspended — not tracked or injected.`);
+                        return;
+                    }
+                    $state.removeClass('wf_suspended');
+                    if (day < 1) {
+                        $state.text(`${cycle.label}: needs a day counter (set Day above).`);
+                        return;
+                    }
+                    const cycleDay = cycleDayForDay(scene, cycle);
+                    const phase = cyclePhaseFor(cycle, cycleDay);
+                    $state.text(phase
+                        ? `${cycle.label}: ${phase.name} — day ${cycleDay} of ${cycleLength(cycle)}`
+                        : `${cycle.label}: day ${cycleDay} of ${cycleLength(cycle)}`);
+                };
+                paintState();
+
+                const $anchor = $('<div class="wf_scene_cycle_anchor"></div>')
+                    .attr('title', `Which cycle day ${person.name || 'this character'} was on at Day 1 (1–${cycleLength(cycle)})`);
+                const $anchorInput = $('<input class="text_pole" type="number" min="1">')
+                    .attr('max', String(cycleLength(cycle)))
+                    .val(cycle.startDay)
+                    .on('change', function () {
+                        const length = cycleLength(cycle);
+                        let v = Math.round(Number($(this).val()));
+                        if (!Number.isFinite(v) || v < 1) v = 1;
+                        cycle.startDay = ((v - 1) % length) + 1;
+                        $(this).val(cycle.startDay);
+                        saveSceneData();
+                        paintState();
+                        updateSceneExtensionPrompt();
+                    });
+                $anchor.append($('<label></label>').text('day 1 ='), $anchorInput);
+
+                const $toggle = $('<label class="wf_scene_cycle_toggle" title="Suspend this cycle (pregnancy, contraception, illness, magic). Set the condition field above if the model should know why."></label>');
+                const $box = $('<input type="checkbox">')
+                    .prop('checked', !!cycle.suspended)
+                    .on('change', function () {
+                        cycle.suspended = $(this).prop('checked');
+                        saveSceneData();
+                        paintState();
+                        updateSceneExtensionPrompt();
+                    });
+                $toggle.append($box, $('<span></span>').text('suspend'));
+
+                // The phase is derived from the day counter, so editing the Day
+                // field has to repaint this line. Stash the painter on the row and
+                // let refreshCycleStates() (called from renderSceneDatePreview,
+                // the seam every date handler already goes through) find it —
+                // cheaper and less disruptive than re-rendering every person card
+                // on each keystroke.
+                $row.data('wfPaintCycle', paintState);
+                $row.append($state, $anchor, $toggle);
+                $stats.append($row);
+            }
+
             $card.append($stats);
         }
 
@@ -3499,6 +3810,20 @@ function renderSceneDatePreview() {
         if (scene.openEnded) text += ' (open-ended)';
     }
     $('#wf_scene_date_preview').text(text);
+    refreshCycleStates();
+}
+
+/**
+ * Repaint the per-person body-cycle state lines in place. Cycle phases are
+ * derived from the day counter, so every date edit changes them; this is called
+ * from renderSceneDatePreview() because that is the one seam all the date
+ * handlers already pass through.
+ */
+function refreshCycleStates() {
+    $('#wf_scene_present_list .wf_scene_cycle').each(function () {
+        const paint = $(this).data('wfPaintCycle');
+        if (typeof paint === 'function') paint();
+    });
 }
 
 /** Show the calendar controls vs the free-form month/manual-limit fallback. */
@@ -3845,6 +4170,9 @@ export function init() {
     // Seed the Scene Tracker's calendar from the world's [[WORLD_CALENDAR]] block
     // on a fresh chat (no-op when absent or when the user has set dates already).
     eventSource.on(event_types.CHAT_CHANGED, maybeSeedCalendarFromWorld);
+    // Same for the world's [[BODY_CYCLES]] block (no-op when absent, or when this
+    // chat already has cycle definitions).
+    eventSource.on(event_types.CHAT_CHANGED, maybeSeedBodyCyclesFromWorld);
     // Periodic presence re-scan, paced by AI messages (see maybeAutoScan). Reset
     // the per-chat cadence baseline whenever the chat changes.
     eventSource.on(event_types.MESSAGE_RECEIVED, maybeAutoScan);

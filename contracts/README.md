@@ -9,6 +9,7 @@ This directory holds the **shared design contracts** between the
 | [`MEMORY_CONTRACT.md`](./MEMORY_CONTRACT.md) | The npc-memory data channel: `[[NPC_MANIFEST]]`, facets, stable ids, the `npcmem` turn tag, scenes registry, prose fallback. |
 | [`WORLD_FORGE_SYNC.md`](./WORLD_FORGE_SYNC.md) | The runtime seams: Director-card tag, narration-surface alias coverage, the `</style_contract>` marker, `style_override` runtime, plus a producer conformance checklist. |
 | [`DICE_ORACLE.md`](./DICE_ORACLE.md) | The dice oracle channel: the `[[DICE_TABLES]]` carrier entry, roll-table payload (pools, procedures, conditional steps), and the Scene Tracker's authoritative-facts injection. |
+| [`BODY_CYCLES.md`](./BODY_CYCLES.md) | 🚧 **Draft (v0) — consumer not yet written.** The proposed recurring body-state channel: the `[[BODY_CYCLES]]` carrier, per-character cycle seed payload, and phase derivation from the Scene Tracker day counter. Nothing in this fork reads it yet. |
 
 ## Canonical vs. mirror
 
@@ -27,10 +28,15 @@ scripts/sync-contracts.sh --check
 ```
 
 `.github/workflows/contracts-drift.yml` runs the `--check` mode on every PR that
-touches `contracts/`, so a hand-edit or a stale mirror fails CI. While the
-canonical `contracts/` directory hasn't been published in World-Forge yet, the
-check treats "canonical unreachable" as a skip (not a failure); it starts
-enforcing once the World-Forge side lands.
+touches `contracts/`, so a hand-edit or a stale mirror fails CI. The canonical
+`contracts/` directory is published, so the check is enforcing; it still treats
+"canonical unreachable" as a skip rather than a failure, so a network blip does
+not turn the build red on its own.
+
+Note that a **draft** contract is mirrored under the same rule as an established
+one: byte-identical or CI fails. A draft's canonical copy may still change while
+its consumer is being built, so a canonical edit means re-running the sync here
+in the same change.
 
 To point the sync at a branch or fork while iterating:
 

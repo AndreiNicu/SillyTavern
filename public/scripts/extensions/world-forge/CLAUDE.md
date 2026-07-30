@@ -19,7 +19,7 @@ root):
 - `contracts/WORLD_FORGE_SYNC.md` — the runtime seams: Director-card tag (§2), alias coverage (§3), the `</style_contract>` marker (§4), `style_override` runtime.
 - `contracts/MEMORY_CONTRACT.md` — the npc-memory data channel the Scene Tracker's roster feeds into (scene gating maps present names → stable ids).
 - `contracts/DICE_ORACLE.md` — the Scene Tracker's Dice tab: the `[[DICE_TABLES]]` carrier entry, the roll-table payload schema, and the `<dice_oracle>` injection lifecycle.
-- `contracts/BODY_CYCLES.md` — the `[[BODY_CYCLES]]` seed for recurring body states as Scene Tracker *supplementary* state: per-character phases derived from the day counter, the way the weekday and anchored month already are. Implemented here (`readWorldBodyCycles` / `maybeSeedBodyCyclesFromWorld` / `cycleDayForDay`), but the contract is **still v0 and unratified** and the producer does not emit the carrier yet. Read it before touching `SceneData.cycles`, the derivation, or the scan prompt — the cycle is deliberately derived and must never be added to `SCENE_EXTRACT_PROMPT`.
+- `contracts/BODY_CYCLES.md` — the `[[BODY_CYCLES]]` seed for recurring body states as Scene Tracker *supplementary* state: per-character phases derived from the day counter, the way the weekday and anchored month already are. Implemented here (`readWorldBodyCycles` / `maybeSeedBodyCyclesFromWorld` / `cycleDayForDay`) against **v1** of the contract; the producer does not emit the carrier yet, so it fires only on hand-authored entries. Read it before touching `SceneData.cycles`, the derivation, or the scan prompt — the cycle is deliberately derived and must never be added to `SCENE_EXTRACT_PROMPT`.
 
 ## If those expectations actually change, it's a contract change
 

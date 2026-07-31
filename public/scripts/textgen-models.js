@@ -115,6 +115,10 @@ const OPENROUTER_PROVIDERS = [
  */
 const NANOGPT_PROVIDERS = [
     {
+        'id': 'aionlabs',
+        'label': 'Aion',
+    },
+    {
         'id': 'akash',
         'label': 'Akash',
     },
@@ -129,6 +133,14 @@ const NANOGPT_PROVIDERS = [
     {
         'id': 'arliai',
         'label': 'ArliAI',
+    },
+    {
+        'id': 'aster',
+        'label': 'Aster',
+    },
+    {
+        'id': 'aster-fast',
+        'label': 'Aster Fast',
     },
     {
         'id': 'atlascloud',
@@ -167,8 +179,20 @@ const NANOGPT_PROVIDERS = [
         'label': 'Cloudflare',
     },
     {
+        'id': 'coreweave',
+        'label': 'CoreWeave',
+    },
+    {
+        'id': 'crofai',
+        'label': 'CrofAI',
+    },
+    {
         'id': 'crusoe',
         'label': 'Crusoe',
+    },
+    {
+        'id': 'decart',
+        'label': 'Decart',
     },
     {
         'id': 'dekallm',
@@ -187,8 +211,16 @@ const NANOGPT_PROVIDERS = [
         'label': 'Fireworks',
     },
     {
+        'id': 'fireworks-fast',
+        'label': 'Fireworks Fast',
+    },
+    {
         'id': 'friendli',
         'label': 'Friendli',
+    },
+    {
+        'id': 'gerra',
+        'label': 'Gerra',
     },
     {
         'id': 'gmicloud',
@@ -212,7 +244,7 @@ const NANOGPT_PROVIDERS = [
     },
     {
         'id': 'ionet',
-        'label': 'Io Net',
+        'label': 'io.net',
     },
     {
         'id': 'inceptron',
@@ -229,6 +261,14 @@ const NANOGPT_PROVIDERS = [
     {
         'id': 'meganova',
         'label': 'MegaNova',
+    },
+    {
+        'id': 'meta',
+        'label': 'Meta',
+    },
+    {
+        'id': 'mixlayer',
+        'label': 'Mixlayer',
     },
     {
         'id': 'minimax',
@@ -256,7 +296,11 @@ const NANOGPT_PROVIDERS = [
     },
     {
         'id': 'neuralwatt',
-        'label': 'Neuralwatt',
+        'label': 'NeuralWatt',
+    },
+    {
+        'id': 'tensorix',
+        'label': 'TensorX',
     },
     {
         'id': 'nextbit',
@@ -277,6 +321,18 @@ const NANOGPT_PROVIDERS = [
     {
         'id': 'redpill',
         'label': 'Redpill',
+    },
+    {
+        'id': 'sailresearch-asap',
+        'label': 'Sail Research (ASAP)',
+    },
+    {
+        'id': 'sailresearch-priority',
+        'label': 'Sail Research (Priority)',
+    },
+    {
+        'id': 'sailresearch-standard',
+        'label': 'Sail Research (Standard)',
     },
     {
         'id': 'sambanova',
@@ -303,6 +359,10 @@ const NANOGPT_PROVIDERS = [
         'label': 'Together',
     },
     {
+        'id': 'uomi',
+        'label': 'Uomi',
+    },
+    {
         'id': 'venice',
         'label': 'Venice',
     },
@@ -311,8 +371,24 @@ const NANOGPT_PROVIDERS = [
         'label': 'Weights & Biases',
     },
     {
+        'id': 'wafer',
+        'label': 'Wafer',
+    },
+    {
+        'id': 'xai',
+        'label': 'xAI',
+    },
+    {
+        'id': 'xiaomi',
+        'label': 'Xiaomi',
+    },
+    {
         'id': 'zai',
         'label': 'Z.AI',
+    },
+    {
+        'id': 'zenmux',
+        'label': 'ZenMux',
     },
 ];
 

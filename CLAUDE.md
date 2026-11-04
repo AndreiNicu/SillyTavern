@@ -22,6 +22,7 @@ read-only at the repo root):
 - `contracts/WORLD_FORGE_SYNC.md` — the runtime seams (Director tag, alias coverage, `</style_contract>` marker) + producer conformance checklist.
 - `contracts/DICE_ORACLE.md` — the dice oracle channel (`[[DICE_TABLES]]` carrier, roll-table payload, authoritative-facts injection).
 - `contracts/BODY_CYCLES.md` — the `[[BODY_CYCLES]]` recurring-body-state seed (per-character phases, derived from the Scene Tracker day counter). **v1, and half-live**: the consumer side here reads, seeds, derives and injects it, but World-Forge does not emit the carrier yet, so in practice it fires only on a hand-authored entry. Read it before adding Scene Tracker supplementary state.
+- `contracts/RPG_STATS.md` — the `[[RPG_STATS]]` character-state channel (stat system, item catalog, starting sheets, bestiary, keyed by npc-memory slug ids). **Draft, schema 0 — neither side built**: nothing here reads it and World-Forge must not emit it yet. Read it before starting any RPG layer work.
 
 If those expectations change, it is a **contract change**:
 

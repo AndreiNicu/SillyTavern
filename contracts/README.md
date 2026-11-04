@@ -10,6 +10,7 @@ This directory holds the **shared design contracts** between the
 | [`WORLD_FORGE_SYNC.md`](./WORLD_FORGE_SYNC.md) | The runtime seams: Director-card tag, narration-surface alias coverage, the `</style_contract>` marker, `style_override` runtime, plus a producer conformance checklist. |
 | [`DICE_ORACLE.md`](./DICE_ORACLE.md) | The dice oracle channel: the `[[DICE_TABLES]]` carrier entry, roll-table payload (pools, procedures, conditional steps), and the Scene Tracker's authoritative-facts injection. |
 | [`BODY_CYCLES.md`](./BODY_CYCLES.md) | Recurring body states: the `[[BODY_CYCLES]]` carrier, per-character cycle seed payload, and phase derivation from the Scene Tracker day counter. **v1 — consumer implemented here, producer not wired**, so it fires only on hand-authored carrier entries. |
+| [`RPG_STATS.md`](./RPG_STATS.md) | The RPG character-state channel: the `[[RPG_STATS]]` carrier with the world's stat system, item catalog, starting sheets, and bestiary, keyed by npc-memory slug ids. **Draft (schema 0) — neither side built**; producers must not emit it yet. |
 
 ## Canonical vs. mirror
 

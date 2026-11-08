@@ -123,6 +123,10 @@ const NANOGPT_PROVIDERS = [
         'label': 'Aion',
     },
     {
+        'id': 'aoru',
+        'label': 'Aoru AI',
+    },
+    {
         'id': 'akash',
         'label': 'Akash',
     },
@@ -133,6 +137,10 @@ const NANOGPT_PROVIDERS = [
     {
         'id': 'ambient',
         'label': 'Ambient',
+    },
+    {
+        'id': 'anthropic',
+        'label': 'Anthropic',
     },
     {
         'id': 'arliai',
@@ -187,10 +195,6 @@ const NANOGPT_PROVIDERS = [
         'label': 'CoreWeave',
     },
     {
-        'id': 'crofai',
-        'label': 'CrofAI',
-    },
-    {
         'id': 'crusoe',
         'label': 'Crusoe',
     },
@@ -211,6 +215,14 @@ const NANOGPT_PROVIDERS = [
         'label': 'DeepSeek',
     },
     {
+        'id': 'darkbloom',
+        'label': 'Darkbloom',
+    },
+    {
+        'id': 'engy',
+        'label': 'EngyAI',
+    },
+    {
         'id': 'fireworks',
         'label': 'Fireworks',
     },
@@ -227,16 +239,116 @@ const NANOGPT_PROVIDERS = [
         'label': 'Gerra',
     },
     {
+        'id': 'ionos',
+        'label': 'IONOS',
+    },
+    {
+        'id': 'gonkaai',
+        'label': 'Gonka24',
+    },
+    {
+        'id': 'netra',
+        'label': 'Netra Runtime',
+    },
+    {
+        'id': 'hyperfusion',
+        'label': 'Hyperfusion',
+    },
+    {
+        'id': 'entrim',
+        'label': 'Entrim',
+    },
+    {
+        'id': 'runanywhere',
+        'label': 'RunAnywhere (Wally)',
+    },
+    {
+        'id': 'runanywhere-fast',
+        'label': 'RunAnywhere Fast (Wally)',
+    },
+    {
+        'id': 'creekside',
+        'label': 'Creekside Compute',
+    },
+    {
+        'id': 'coralbricks',
+        'label': 'CoralBricks',
+    },
+    {
+        'id': 'coralbricks-standard',
+        'label': 'CoralBricks Standard',
+    },
+    {
+        'id': 'orcarouter',
+        'label': 'OrcaRouter',
+    },
+    {
+        'id': 'autoloops',
+        'label': 'Autoloops',
+    },
+    {
         'id': 'gmicloud',
         'label': 'GMICloud',
     },
     {
-        'id': 'lilac',
-        'label': 'Lilac',
+        'id': 'arnict',
+        'label': 'Arnict',
+    },
+    {
+        'id': 'kitani',
+        'label': 'Kitani',
+    },
+    {
+        'id': 'lucidity',
+        'label': 'Lucidity',
+    },
+    {
+        'id': 'sable',
+        'label': 'Sable',
+    },
+    {
+        'id': 'publicai',
+        'label': 'Public AI',
+    },
+    {
+        'id': 'munito',
+        'label': 'Munito',
+    },
+    {
+        'id': 'discretestack',
+        'label': 'DiscreteStack',
+    },
+    {
+        'id': 'primaera',
+        'label': 'Prima Era',
+    },
+    {
+        'id': 'heabsy',
+        'label': 'Heabsy',
+    },
+    {
+        'id': 'scx',
+        'label': 'SCX (Global)',
+    },
+    {
+        'id': 'scx-eu',
+        'label': 'SCX (EU only)',
+    },
+    {
+        'id': 'scx-fast',
+        'label': 'SCX Fast',
     },
     {
         'id': 'google',
-        'label': 'Google',
+        'label': 'Google Vertex',
+    },
+    {
+        'id': 'googlenative',
+        'label': 'Google AI Studio',
+    },
+    {
+        'id': 'greenference',
+        'label': 'Greenference',
     },
     {
         'id': 'groq',
@@ -279,6 +391,10 @@ const NANOGPT_PROVIDERS = [
         'label': 'MiniMax',
     },
     {
+        'id': 'modal',
+        'label': 'Modal',
+    },
+    {
         'id': 'modelrun',
         'label': 'ModelRun',
     },
@@ -303,8 +419,20 @@ const NANOGPT_PROVIDERS = [
         'label': 'NeuralWatt',
     },
     {
+        'id': 'neuralwatt-fast',
+        'label': 'NeuralWatt Fast',
+    },
+    {
+        'id': 'neuralwatt-flex',
+        'label': 'NeuralWatt Flex',
+    },
+    {
+        'id': 'nube',
+        'label': 'Nube',
+    },
+    {
         'id': 'tensorix',
-        'label': 'Tensorix',
+        'label': 'TensorX',
     },
     {
         'id': 'nextbit',
@@ -315,16 +443,68 @@ const NANOGPT_PROVIDERS = [
         'label': 'Novita',
     },
     {
+        'id': 'openai',
+        'label': 'OpenAI',
+    },
+    {
+        'id': 'ollama',
+        'label': 'Ollama',
+    },
+    {
+        'id': 'particle',
+        'label': 'Particle AI',
+    },
+    {
         'id': 'parasail',
         'label': 'Parasail',
+    },
+    {
+        'id': 'parasail-fast',
+        'label': 'Parasail Fast',
+    },
+    {
+        'id': 'pareto',
+        'label': 'Pareto Inference',
+    },
+    {
+        'id': 'astorias',
+        'label': 'Astorias',
     },
     {
         'id': 'phala',
         'label': 'Phala',
     },
     {
+        'id': 'plubo',
+        'label': 'Plubo AI',
+    },
+    {
+        'id': 'primeintellect',
+        'label': 'PrimeIntellect',
+    },
+    {
+        'id': 'pokee',
+        'label': 'Pokee',
+    },
+    {
+        'id': 'abliteration',
+        'label': 'Abliteration.ai',
+    },
+    {
         'id': 'redpill',
         'label': 'Redpill',
+    },
+    {
+        'id': 'reka',
+        'label': 'Reka',
+    },
+    {
+        'id': 'relace',
+        'label': 'Relace',
+    },
+    {
+        'id': 'runware',
+        'label': 'Runware',
     },
     {
         'id': 'sailresearch-asap',
@@ -355,6 +535,14 @@ const NANOGPT_PROVIDERS = [
         'label': 'StreamLake',
     },
     {
+        'id': 'tencent',
+        'label': 'Tencent Cloud',
+    },
+    {
+        'id': 'tenstorrent',
+        'label': 'Tenstorrent',
+    },
+    {
         'id': 'tinfoil',
         'label': 'Tinfoil',
     },
@@ -364,23 +552,27 @@ const NANOGPT_PROVIDERS = [
     },
     {
         'id': 'uomi',
-        'label': 'UOMI',
+        'label': 'Uomi',
     },
     {
         'id': 'venice',
         'label': 'Venice',
     },
     {
-        'id': 'wafer',
-        'label': 'Wafer',
-    },
-    {
         'id': 'wandb',
         'label': 'Weights & Biases',
     },
     {
+        'id': 'wafer',
+        'label': 'Wafer',
+    },
+    {
+        'id': 'wafer-us',
+        'label': 'Wafer US',
+    },
+    {
         'id': 'xai',
-        'label': 'xAI',
+        'label': 'SpaceXAI',
     },
     {
         'id': 'xiaomi',

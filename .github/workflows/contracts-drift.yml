@@ -23,4 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check contracts are in sync with canonical World-Forge
+        env:
+          # Authenticates the canonical contracts/ directory listing (file
+          # discovery) so it isn't subject to the unauthenticated rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/sync-contracts.sh --check
